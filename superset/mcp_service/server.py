@@ -30,6 +30,7 @@ from typing import Annotated, Any, Callable
 import uvicorn
 from fastmcp.exceptions import ToolError
 from fastmcp.server.middleware import Middleware
+from flask import current_app, has_app_context
 from starlette.requests import ClientDisconnect
 
 from superset.mcp_service.app import create_mcp_app, init_fastmcp_server
@@ -47,6 +48,7 @@ from superset.mcp_service.middleware import (
     StructuredContentStripperMiddleware,
 )
 from superset.mcp_service.storage import _create_redis_store
+from superset.mcp_service.webhook_logging import attach_webhook_handler
 from superset.utils import json
 
 logger = logging.getLogger(__name__)
@@ -207,6 +209,16 @@ def configure_logging(debug: bool = False) -> None:
     logging.getLogger("mcp.server.lowlevel.server").addFilter(
         transport_disconnect_filter
     )
+
+    # Forward WARNING/ERROR records to an external webhook when configured.
+    # The filters above downgrade some ERRORs to WARNING, so the handler's
+    # default level is WARNING to keep those visible.
+    attach_webhook_handler(_get_flask_app_or_none())
+
+
+def _get_flask_app_or_none() -> Any | None:
+    """Return the active Flask app when one exists, else ``None``."""
+    return current_app if has_app_context() else None
 
 
 def create_event_store(config: dict[str, Any] | None = None) -> Any | None:

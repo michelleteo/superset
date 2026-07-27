@@ -44,6 +44,59 @@ End by updating your config to pass in an instance of the logger you want to use
 EVENT_LOGGER = JSONStdOutEventLogger()
 ```
 
+## Forwarding MCP Errors to a Webhook
+
+The MCP service can forward errors to an external HTTP endpoint so they can be observed
+and auto-remediated. Two complementary pieces are available; both are disabled until
+`MCP_ERROR_WEBHOOK_URL` is set (via `superset_config.py` or an environment variable of the
+same name).
+
+| Setting | Default | Description |
+| --- | --- | --- |
+| `MCP_ERROR_WEBHOOK_URL` | `None` | Webhook endpoint. Unset disables the feature. |
+| `MCP_ERROR_WEBHOOK_MIN_LEVEL` | `"WARNING"` | Minimum log level forwarded. |
+| `MCP_ERROR_WEBHOOK_TIMEOUT` | `3` | HTTP timeout, in seconds. |
+| `MCP_ERROR_WEBHOOK_HEADERS` | `None` | Extra headers, e.g. `{"Authorization": "Bearer ..."}`. |
+
+### Log handler
+
+`superset.mcp_service.webhook_logging.WebhookLogHandler` is attached automatically to the
+`superset`, `mcp` and `fastmcp` loggers by the MCP service (both the HTTP server and the
+stdio entry point). Each record is POSTed as JSON:
+
+```json
+{
+  "timestamp": 1700000000.0,
+  "level": "ERROR",
+  "logger": "superset.mcp_service.middleware",
+  "message": "MCP tool call failed: ...",
+  "module": "middleware",
+  "func": "on_call_tool",
+  "line": 571,
+  "traceback": "Traceback (most recent call last): ..."
+}
+```
+
+Messages and tracebacks are redacted (connection strings, tokens, emails, IPs and
+sensitive keys such as `password` or `api_key`) before being sent, the POST runs on a
+background daemon thread, and failures are swallowed — webhook problems never block or
+break an MCP tool call. The default `WARNING` level keeps user-error records visible,
+since the MCP service downgrades some expected `ERROR` records to `WARNING`.
+
+### Structured error events
+
+For structured tool-level events, enable the event logger in `superset_config.py`:
+
+```python
+from superset.mcp_service.webhook_event_logger import WebhookEventLogger
+
+EVENT_LOGGER = WebhookEventLogger()
+```
+
+It extends `DBEventLogger`, so DB logging and the Action Log UI keep working, and
+additionally POSTs `action`, `user_id`, `duration_ms` and `curated_payload` for error
+events (`action == "mcp_tool_error"`, `severity == "error"`, or `success is False`).
+
 ## StatsD Logging
 
 Superset can be configured to log events to [StatsD](https://github.com/statsd/statsd)

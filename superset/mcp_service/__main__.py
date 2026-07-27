@@ -60,6 +60,7 @@ if os.environ.get("FASTMCP_TRANSPORT", "stdio") == "stdio":
 from superset.mcp_service.app import init_fastmcp_server, mcp
 from superset.mcp_service.middleware import create_response_size_guard_middleware
 from superset.mcp_service.server import build_middleware_list
+from superset.mcp_service.webhook_logging import attach_webhook_handler
 
 
 def _add_default_middlewares() -> None:
@@ -124,6 +125,10 @@ def main() -> None:
                     # Keep handlers that don't have a stream attribute
                     new_handlers.append(h)
             logger.handlers = new_handlers
+
+        # stdio mode does not call configure_logging(), so attach the error
+        # webhook handler here too (no-op when MCP_ERROR_WEBHOOK_URL is unset).
+        attach_webhook_handler()
 
         # Capture any print statements during initialization
         captured_output = io.StringIO()
