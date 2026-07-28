@@ -19,6 +19,7 @@
 
 from __future__ import annotations
 
+import math
 import time
 import uuid
 from collections import deque
@@ -98,7 +99,7 @@ class ErrorEvent:
             logger=str(payload.get("logger", "")),
             module=str(payload.get("module", "")),
             func=str(payload.get("func", "")),
-            line=int(_as_float(payload.get("line"), 0)),
+            line=_as_int(payload.get("line"), 0),
             traceback=(str(payload["traceback"]) if payload.get("traceback") else None),
             user_id=None if user_id is None else str(user_id),
             service=str(payload.get("service", "superset")),
@@ -108,10 +109,16 @@ class ErrorEvent:
 
 
 def _as_float(value: Any, default: float) -> float:
+    """Coerce to a finite float; ``inf``/``nan`` are not usable as data."""
     try:
-        return float(value)
-    except (TypeError, ValueError):
+        number = float(value)
+    except (TypeError, ValueError, OverflowError):
         return default
+    return number if math.isfinite(number) else default
+
+
+def _as_int(value: Any, default: int) -> int:
+    return int(_as_float(value, default))
 
 
 @dataclass

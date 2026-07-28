@@ -53,7 +53,10 @@ def payload_to_events(payload: Any) -> list[ErrorEvent]:
             continue
         if str(record.get("level", "ERROR")).upper() in _IGNORED_LEVELS:
             continue
-        events.append(ErrorEvent.from_webhook_payload(record))
+        try:
+            events.append(ErrorEvent.from_webhook_payload(record))
+        except Exception:  # noqa: BLE001 - one bad record must not drop a batch
+            logger.warning("dropping unparseable webhook record", exc_info=True)
     return events
 
 

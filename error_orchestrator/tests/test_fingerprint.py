@@ -17,6 +17,8 @@
 
 from __future__ import annotations
 
+import math
+
 from error_orchestrator.fingerprint import (
     canonicalize,
     fingerprint_event,
@@ -109,3 +111,33 @@ def test_parse_traceback_handles_garbage() -> None:
     parsed = parse_traceback("not really a traceback")
     assert parsed.frames == []
     assert parsed.exception_type == ""
+
+
+def test_numbers_with_unit_suffixes_are_templated() -> None:
+    assert normalize_text("timed out after 30s") == normalize_text(
+        "timed out after 91s"
+    )
+    assert normalize_text("read 1.5 MiB") == normalize_text("read 12 MiB")
+
+
+def test_unrelated_errors_from_one_log_site_stay_separate() -> None:
+    timeout = ErrorEvent(
+        message="TimeoutError: query timed out",
+        module="superset.tasks",
+        func="run",
+        line=9,
+    )
+    missing = ErrorEvent(
+        message="KeyError: no such column", module="superset.tasks", func="run", line=9
+    )
+    assert fingerprint_event(timeout) != fingerprint_event(missing)
+    assert canonicalize(timeout).frames_from_traceback is False
+    assert canonicalize(make_event()).frames_from_traceback is True
+
+
+def test_non_finite_numerics_never_reach_the_event() -> None:
+    for line in (1e400, "nan", "inf", "-inf", float("nan")):
+        event = ErrorEvent.from_webhook_payload({"message": "boom", "line": line})
+        assert event.line == 0
+    event = ErrorEvent.from_webhook_payload({"message": "boom", "timestamp": 1e400})
+    assert math.isfinite(event.timestamp)

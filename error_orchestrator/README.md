@@ -58,23 +58,33 @@ POST /webhook/errors│ ingest queue │  normalize + hash (O(1) dedup)
 
 States: `new → triaged → reproducing → could_not_reproduce | fix_proposed →
 awaiting_review | auto_merged`. Illegal transitions raise
-`state_machine.InvalidTransitionError`.
+`state_machine.InvalidTransitionError`. `new` is transient — pool creation and
+the triage transition happen in one call, so `/stats` always reports `new: 0`.
+
+Malformed input is contained at the edge: a record that cannot be parsed is
+logged and skipped rather than failing the batch around it, and non-finite
+numerics (`line: 1e400`, `timestamp: nan`) fall back to defaults so they can
+never poison a pool or the JSON responses.
 
 ## Design notes
 
 **Normalization before hashing** (`fingerprint.py`). Memory addresses, UUIDs,
 timestamps, emails, IPs, paths, quoted strings and bare numbers are templated
-out; line numbers are kept. The hash covers the call sequence of function
-names (vendor frames dropped) plus the exception type — the templated message
-is only part of the hash when there is no traceback to go on, because
-interpolated identifiers (`dataset sales` vs `dataset marketing`) cannot be
-templated reliably.
+out; line numbers are kept. When the event carries a traceback, the hash covers
+the call sequence of function names (vendor frames dropped) plus the exception
+type, and deliberately excludes the message, because interpolated identifiers
+(`dataset sales` vs `dataset marketing`) cannot be templated reliably. Events
+with no traceback have no call sequence to rely on — one log site emits many
+unrelated errors — so there the templated message joins the synthesized
+`module:func:line` location in the hash.
 
 **Triage only runs when the hash misses.** Identical traces dedup in O(1)
 through a dict; a session is spent only to answer the question the hash cannot
 — "is this a genuinely new bug, or the same bug down a different code path?".
-A merge is accepted only for a known `pool_id` at confidence ≥ 0.7, otherwise
-the fingerprint becomes its own category.
+When no categories exist yet there is nothing to merge into, so the first
+fingerprint skips the session entirely. A merge is accepted only for a known
+`pool_id` at confidence ≥ 0.7, otherwise the fingerprint becomes its own
+category.
 
 **Lazy deletion in the heap** (`priority.py`). Priority changes on every new
 occurrence, and `heapq` cannot re-key. Each change pushes a fresh entry

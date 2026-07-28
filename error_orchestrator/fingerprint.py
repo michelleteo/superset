@@ -69,6 +69,15 @@ _SCRUBBERS: tuple[tuple[re.Pattern[str], str], ...] = (
     (re.compile(r"\b(?:\d{1,3}\.){3}\d{1,3}\b"), "<IP>"),
     (re.compile(r"(?<![\w/])(?:/[\w.\-@+]+){2,}/?"), "<PATH>"),
     (re.compile(r"'[^']*'|\"[^\"]*\""), "<STR>"),
+    # Durations and sizes: "after 30s", "1.5 MiB" - the unit is structural.
+    (
+        re.compile(
+            r"(?<![\w.])-?\d+(?:\.\d+)?(?=\s?"
+            r"(?:ns|us|ms|s|m|h|d|[kmgt]i?b|b|%)\b)",
+            re.IGNORECASE,
+        ),
+        "<NUM>",
+    ),
     (re.compile(r"(?<![\w.])-?\d+(?:\.\d+)?(?![\w.])"), "<NUM>"),
 )
 
@@ -103,6 +112,9 @@ class CanonicalError:
     message_template: str
     frames: tuple[Frame, ...] = ()
     logger: str = ""
+    #: False when the single frame was synthesized from the log record's
+    #: module/func/line rather than parsed out of a real traceback.
+    frames_from_traceback: bool = False
 
     def render(self) -> str:
         """Human-readable canonical form (also the pool's stored signature)."""
@@ -118,16 +130,20 @@ class CanonicalError:
     def hash_form(self) -> str:
         """What actually gets hashed.
 
-        When we have a call sequence, the frames plus the exception type are
-        the identity of the failure; the message is left out because scrubbing
-        cannot reliably template interpolated identifiers ("dataset sales" vs
-        "dataset marketing"). Without frames there is nothing else to go on, so
-        the templated message carries the identity instead.
+        A real call sequence plus the exception type is the identity of the
+        failure, and the message is left out because scrubbing cannot reliably
+        template interpolated identifiers ("dataset sales" vs "dataset
+        marketing"). Without a traceback there is no call sequence to rely on -
+        one log site emits many unrelated errors - so the templated message
+        joins whatever location we do have.
         """
         call_sequence = "|".join(frame.render() for frame in self.frames)
-        if self.frames:
+        if self.frames_from_traceback:
             return f"exc={self.exception_type}\nframes={call_sequence}"
-        return f"exc={self.exception_type}\nmsg={self.message_template}"
+        return (
+            f"exc={self.exception_type}\nframes={call_sequence}"
+            f"\nmsg={self.message_template}"
+        )
 
     @property
     def fingerprint(self) -> str:
@@ -189,6 +205,7 @@ def canonicalize(event: ErrorEvent) -> CanonicalError:
     """Reduce an event to its instance-independent, hashable form."""
     parsed = parse_traceback(event.traceback) if event.traceback else _ParsedTraceback()
     frames = tuple(parsed.frames)
+    from_traceback = bool(frames)
     if not frames and event.module:
         frames = (Frame(module=event.module, func=event.func, line=event.line),)
     message = parsed.exception_message or event.message
@@ -197,6 +214,7 @@ def canonicalize(event: ErrorEvent) -> CanonicalError:
         message_template=normalize_text(message),
         frames=frames,
         logger=event.logger,
+        frames_from_traceback=from_traceback,
     )
 
 

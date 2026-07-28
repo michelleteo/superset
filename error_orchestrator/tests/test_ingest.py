@@ -17,6 +17,7 @@
 
 from __future__ import annotations
 
+import math
 import time
 
 from starlette.testclient import TestClient
@@ -96,3 +97,46 @@ def test_http_endpoints_accept_events_and_expose_state() -> None:
         assert detail["history"][0]["to"] == "triaged"
         assert client.get("/pools/nope").status_code == 404
         assert client.get("/stats").json()["pools"]
+
+
+def test_one_poisoned_record_does_not_drop_the_batch() -> None:
+    events = payload_to_events(
+        [
+            MCP_PAYLOAD,
+            {**MCP_PAYLOAD, "line": 1e400},
+            {**MCP_PAYLOAD, "timestamp": "nan"},
+            MCP_PAYLOAD,
+        ]
+    )
+    assert len(events) == 4
+    assert all(math.isfinite(event.timestamp) for event in events)
+
+
+def test_pools_stay_serializable_after_a_non_finite_payload() -> None:
+    orchestrator = Orchestrator(
+        config=OrchestratorConfig(
+            triage_workers=1, remediation_workers=1, risk_check_workers=1
+        ),
+        devin=make_dry_run_client(),
+    )
+    with TestClient(create_app(orchestrator)) as client:
+        # A literal 1e400 is valid JSON text that decodes to float("inf").
+        posted = client.post(
+            "/webhook/errors",
+            content=(
+                '{"message": "boom", "level": "ERROR", "logger": "superset.tasks",'
+                ' "module": "tasks", "func": "run", "line": 1e400,'
+                ' "timestamp": 1e400}'
+            ),
+            headers={"Content-Type": "application/json"},
+        )
+        assert posted.json() == {"accepted": 1, "received": 1}
+
+        deadline = time.time() + 5
+        while time.time() < deadline and not orchestrator.store.pools:
+            time.sleep(0.05)
+
+        assert client.get("/pools").status_code == 200
+        assert client.get("/stats").status_code == 200
+        pool = client.get("/pools").json()["pools"][0]
+        assert client.get(f"/pools/{pool['pool_id']}").status_code == 200

@@ -27,6 +27,8 @@ import argparse
 import logging
 import sys
 
+import uvicorn
+
 from error_orchestrator.config import OrchestratorConfig
 from error_orchestrator.devin_client import DevinClient
 from error_orchestrator.ingest import create_app
@@ -55,7 +57,11 @@ def main(argv: list[str] | None = None) -> int:
         level=getattr(logging, args.log_level.upper(), logging.INFO),
         format="%(asctime)s %(levelname)s %(name)s %(message)s",
     )
-    config = OrchestratorConfig.from_env()
+    try:
+        config = OrchestratorConfig.from_env()
+    except ValueError as error:
+        logger.error("invalid configuration: %s", error)
+        return 2
     if args.host:
         config.host = args.host
     if args.port:
@@ -65,8 +71,6 @@ def main(argv: list[str] | None = None) -> int:
     if devin is None and not config.devin_api_key:
         logger.error("DEVIN_API_KEY is not set; start with --dry-run to test locally")
         return 2
-
-    import uvicorn
 
     app = create_app(Orchestrator(config=config, devin=devin))
     uvicorn.run(
