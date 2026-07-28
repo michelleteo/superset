@@ -279,6 +279,10 @@ let simRunning = true;
 let openTicket = null;
 let openLane = null;
 let reviewers = [];
+// A poll that re-renders the drawer under the pointer swallows the click that
+// was already on its way, so live refreshes pause while a human is in there.
+let drawerBusy = false;
+let draftResolution = '';
 
 const $ = (id) => document.getElementById(id);
 
@@ -345,7 +349,7 @@ function renderLanes(data) {
   document.querySelectorAll('[data-lane]').forEach((lane) => {
     lane.onclick = () => { openLane = lane.dataset.lane; renderLaneLog(data); };
   });
-  if (openLane) renderLaneLog(data);
+  if (openLane && !drawerBusy) renderLaneLog(data);
 }
 
 function renderLaneLog(data) {
@@ -524,7 +528,9 @@ function ticketActions(ticket) {
     buttons.push('<button id="t-revert" class="danger">Revert merge</button>');
   }
   if (ticket.actions.includes('clear')) {
-    buttons.push('<input type="text" id="t-resolution" class="grow" placeholder="resolution…">');
+    buttons.push(
+      `<input type="text" id="t-resolution" class="grow" placeholder="resolution…" value="${escapeHtml(draftResolution)}">`,
+    );
     buttons.push('<button id="t-clear" class="primary">Clear ticket</button>');
   }
   return buttons.join('') || '<span class="cat-meta">still in the pipeline — no human action yet</span>';
@@ -589,14 +595,17 @@ function renderTicket(ticket) {
     </div>`;
   $('drawer-actions').innerHTML = ticketActions(ticket);
   $('t-close').onclick = closeDrawer;
+  const resolution = $('t-resolution');
+  if (resolution) resolution.oninput = () => { draftResolution = resolution.value; };
   const on = (id, handler) => { const el = $(id); if (el) el.onclick = handler; };
   on('t-assign', () => post(`/api/pools/${ticket.pool_id}/assign`, { to: $('t-assignee').value })
     .then(() => showTicket(ticket.pool_id)).then(refresh));
   on('t-revert', () => post(`/api/pools/${ticket.pool_id}/revert`, { by: ticket.assignee })
     .then(() => showTicket(ticket.pool_id)).then(refresh));
   on('t-clear', () => post(`/api/pools/${ticket.pool_id}/clear`, {
-    by: ticket.assignee, resolution: $('t-resolution').value || undefined,
-  }).then(() => showTicket(ticket.pool_id)).then(refresh));
+    by: ticket.assignee, resolution: draftResolution || undefined,
+  }).then(() => { draftResolution = ''; })
+    .then(() => showTicket(ticket.pool_id)).then(refresh));
 }
 
 async function showTicket(poolId) {
@@ -612,6 +621,7 @@ async function showTicket(poolId) {
 function closeDrawer() {
   openTicket = null;
   openLane = null;
+  draftResolution = '';
   $('drawer').classList.remove('open');
   $('scrim').classList.remove('open');
 }
@@ -656,11 +666,16 @@ async function refresh() {
   renderTickets(data);
   renderSimulator(data.simulator);
   // The ticket is a live view: occurrences keep merging in while it is open.
-  // Re-rendering under a reviewer's cursor would eat their typing, so hold off
-  // while the drawer has focus.
-  if (openTicket && !$('drawer').contains(document.activeElement)) showTicket(openTicket);
+  if (openTicket && !drawerBusy) showTicket(openTicket);
 }
 
+const holdDrawer = () => {
+  const drawer = $('drawer');
+  drawerBusy = drawer.matches(':hover') || drawer.contains(document.activeElement);
+};
+['mouseenter', 'mouseleave', 'focusin', 'focusout'].forEach((event) => {
+  $('drawer').addEventListener(event, holdDrawer);
+});
 $('scrim').onclick = closeDrawer;
 document.addEventListener('keydown', (event) => { if (event.key === 'Escape') closeDrawer(); });
 $('pause').onclick = () => post('/api/simulator', { running: !simRunning }).then(refresh);
