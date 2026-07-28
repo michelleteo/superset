@@ -39,10 +39,11 @@ ALLOWED_TRANSITIONS: dict[PoolState, frozenset[PoolState]] = {
     PoolState.FIX_PROPOSED: frozenset(
         {PoolState.AWAITING_REVIEW, PoolState.AUTO_MERGED}
     ),
-    # Terminal: only a human moves a pool out of these.
+    # Terminal: only a human moves a pool out of these. Reverting an auto-merge
+    # puts the category back in front of a reviewer.
     PoolState.COULD_NOT_REPRODUCE: frozenset(),
     PoolState.AWAITING_REVIEW: frozenset(),
-    PoolState.AUTO_MERGED: frozenset(),
+    PoolState.AUTO_MERGED: frozenset({PoolState.AWAITING_REVIEW}),
 }
 
 

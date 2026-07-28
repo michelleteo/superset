@@ -34,6 +34,7 @@ from starlette.requests import Request
 from starlette.responses import FileResponse, JSONResponse, Response
 from starlette.routing import Route
 
+from error_orchestrator.models import ErrorEvent, ErrorPool, PoolState
 from error_orchestrator.orchestrator import Orchestrator
 from error_orchestrator.review import ReviewError
 from error_orchestrator.simulator import ErrorSimulator
@@ -43,6 +44,16 @@ INDEX_HTML = STATIC_DIR / "dashboard.html"
 
 #: Pools shown in the live table (highest priority first).
 POOL_LIMIT = 60
+
+#: Recent occurrences listed on a ticket.
+INSTANCE_LIMIT = 10
+
+#: What a human can do with a ticket, per terminal state.
+TICKET_ACTIONS: dict[PoolState, tuple[str, ...]] = {
+    PoolState.AWAITING_REVIEW: ("assign", "clear"),
+    PoolState.AUTO_MERGED: ("assign", "revert", "clear"),
+    PoolState.COULD_NOT_REPRODUCE: ("assign", "clear"),
+}
 
 
 @dataclass
@@ -92,6 +103,35 @@ class Dashboard:
             "resolution": human.get("resolution"),
         }
 
+    def ticket(self, pool: ErrorPool) -> dict[str, Any]:
+        """Everything a human needs to act on one pool, in a single payload.
+
+        A row in the queue is not enough to review anything: the diff, the
+        occurrences that were merged into the category and the state history
+        are what make a terminal item actionable.
+        """
+        row = self._pool_row(self.orchestrator.pool_view(pool))
+        fix = pool.proposed_fix
+        return {
+            **row,
+            "signature": pool.signature,
+            "diff": fix.diff if fix else None,
+            "fix_summary": fix.summary if fix else None,
+            "test_added": fix.test_added if fix else None,
+            "branch": fix.branch if fix else None,
+            "instances": [_instance(event) for event in _recent(pool)],
+            "history": [
+                {
+                    "from": step.from_state.value if step.from_state else None,
+                    "to": step.to_state.value,
+                    "at": step.at,
+                    "reason": step.reason,
+                }
+                for step in pool.history
+            ],
+            "actions": list(TICKET_ACTIONS.get(pool.state, ())),
+        }
+
     # ------------------------------------------------------------ HTTP layer
 
     async def index(self, _: Request) -> Response:
@@ -133,6 +173,24 @@ class Dashboard:
             return JSONResponse({"error": "unknown scenario"}, status_code=400)
         return JSONResponse({"accepted": accepted}, status_code=202)
 
+    async def pool_detail(self, request: Request) -> Response:
+        pool = self.orchestrator.store.get(request.path_params["pool_id"])
+        if pool is None:
+            return JSONResponse({"error": "not found"}, status_code=404)
+        return JSONResponse(self.ticket(pool))
+
+    async def revert_pool(self, request: Request) -> Response:
+        body = await _json_body(request)
+        try:
+            item = self.orchestrator.revert_merge(
+                request.path_params["pool_id"],
+                by=body.get("by"),
+                reason=str(body.get("reason", "")),
+            )
+        except ReviewError as error:
+            return JSONResponse({"error": str(error)}, status_code=409)
+        return JSONResponse(item.as_dict())
+
     async def clear_pool(self, request: Request) -> Response:
         body = await _json_body(request)
         try:
@@ -162,9 +220,26 @@ class Dashboard:
             Route("/api/live", self.live, methods=["GET"]),
             Route("/api/simulator", self.control_simulator, methods=["POST"]),
             Route("/api/inject", self.inject, methods=["POST"]),
+            Route("/api/pools/{pool_id}", self.pool_detail, methods=["GET"]),
             Route("/api/pools/{pool_id}/clear", self.clear_pool, methods=["POST"]),
+            Route("/api/pools/{pool_id}/revert", self.revert_pool, methods=["POST"]),
             Route("/api/pools/{pool_id}/assign", self.assign_pool, methods=["POST"]),
         ]
+
+
+def _recent(pool: ErrorPool) -> list[ErrorEvent]:
+    return list(pool.samples)[-INSTANCE_LIMIT:][::-1]
+
+
+def _instance(event: ErrorEvent) -> dict[str, Any]:
+    return {
+        "event_id": event.event_id,
+        "at": event.timestamp,
+        "message": event.message,
+        "user_id": event.user_id,
+        "where": f"{event.module}:{event.func}:{event.line}",
+        "traceback": event.traceback,
+    }
 
 
 async def _json_body(request: Request) -> dict[str, Any]:

@@ -131,7 +131,7 @@ def test_state_machine_allows_only_the_documented_path() -> None:
         (PoolState.TRIAGED, PoolState.AUTO_MERGED),
         (PoolState.REPRODUCING, PoolState.AWAITING_REVIEW),
         (PoolState.COULD_NOT_REPRODUCE, PoolState.FIX_PROPOSED),
-        (PoolState.AUTO_MERGED, PoolState.AWAITING_REVIEW),
+        (PoolState.AWAITING_REVIEW, PoolState.AUTO_MERGED),
     ],
 )
 def test_illegal_transitions_raise(from_state: PoolState, to_state: PoolState) -> None:
@@ -139,6 +139,14 @@ def test_illegal_transitions_raise(from_state: PoolState, to_state: PoolState) -
     assert not can_transition(from_state, to_state)
     with pytest.raises(InvalidTransitionError):
         transition(pool, to_state)
+
+
+def test_a_human_can_send_an_auto_merged_pool_back_for_review() -> None:
+    pool = ErrorPool(fingerprint="fp", title="t", state=PoolState.AUTO_MERGED)
+
+    transition(pool, PoolState.AWAITING_REVIEW, reason="human revert")
+
+    assert pool.state is PoolState.AWAITING_REVIEW
 
 
 def test_snapshot_counts_states() -> None:

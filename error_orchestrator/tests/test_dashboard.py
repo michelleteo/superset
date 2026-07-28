@@ -17,6 +17,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from typing import Iterator, NamedTuple, Sequence
 
 import pytest
@@ -25,7 +26,14 @@ from starlette.testclient import TestClient
 from error_orchestrator.config import OrchestratorConfig
 from error_orchestrator.dashboard import Dashboard
 from error_orchestrator.ingest import create_app
-from error_orchestrator.models import ErrorPool, PoolState
+from error_orchestrator.lanes import Lane, QueueSource, WorkItem
+from error_orchestrator.models import (
+    ErrorEvent,
+    ErrorPool,
+    PoolState,
+    ProposedFix,
+    StateTransition,
+)
 from error_orchestrator.orchestrator import Orchestrator
 from error_orchestrator.review import ReviewQueue
 from error_orchestrator.simulator import (
@@ -221,3 +229,99 @@ def test_assigning_a_non_terminal_pool_conflicts(harness: Harness) -> None:
 
 def test_assigning_an_unknown_pool_is_a_404(harness: Harness) -> None:
     assert harness.client.post("/api/pools/missing/assign", json={}).status_code == 404
+
+
+def test_ticket_carries_the_diff_instances_and_history(harness: Harness) -> None:
+    pool = _pool(harness, "fp-6", "KeyError: boom", PoolState.AWAITING_REVIEW)
+    pool.proposed_fix = ProposedFix(
+        diff="--- a/superset/x.py\n+++ b/superset/x.py\n+ guard",
+        summary="guard the lookup",
+        test_added=True,
+    )
+    pool.history.append(
+        StateTransition(from_state=PoolState.FIX_PROPOSED, to_state=pool.state)
+    )
+    pool.add_event(ErrorEvent(message="boom", module="superset.x", func="q", line=7))
+    harness.orchestrator.review_queue.assign(pool, to="ana")
+
+    body = harness.client.get(f"/api/pools/{pool.pool_id}").json()
+
+    assert body["diff"].startswith("--- a/superset/x.py")
+    assert body["fix_summary"] == "guard the lookup"
+    assert body["instances"][0]["where"] == "superset.x:q:7"
+    assert body["history"][-1]["to"] == "awaiting_review"
+    assert body["actions"] == ["assign", "clear"]
+
+
+def test_an_auto_merged_ticket_offers_a_revert(harness: Harness) -> None:
+    pool = _pool(harness, "fp-7", "ValueError: boom", PoolState.AUTO_MERGED)
+    harness.orchestrator.review_queue.assign(pool, to="ana")
+
+    body = harness.client.get(f"/api/pools/{pool.pool_id}").json()
+
+    assert "revert" in body["actions"]
+
+
+def test_unknown_ticket_is_a_404(harness: Harness) -> None:
+    assert harness.client.get("/api/pools/missing").status_code == 404
+
+
+def test_reverting_a_merge_reopens_the_ticket_for_review(harness: Harness) -> None:
+    pool = _pool(harness, "fp-8", "OSError: boom", PoolState.AUTO_MERGED)
+    harness.orchestrator.review_queue.assign(pool, to="ana")
+    harness.orchestrator.clear_review(pool.pool_id, by="ana")
+
+    body = harness.client.post(
+        f"/api/pools/{pool.pool_id}/revert", json={"by": "bo", "reason": "broke ci"}
+    ).json()
+
+    assert body["assignee"] == "bo"
+    assert body["open"] is True
+    assert pool.state is PoolState.AWAITING_REVIEW
+    assert pool.review_reason == "broke ci"
+
+
+def test_reverting_a_pool_that_was_not_merged_conflicts(harness: Harness) -> None:
+    pool = _pool(harness, "fp-9", "OSError: boom", PoolState.AWAITING_REVIEW)
+
+    response = harness.client.post(f"/api/pools/{pool.pool_id}/revert", json={})
+
+    assert response.status_code == 409
+
+
+@pytest.mark.asyncio
+async def test_a_lane_reports_which_pool_each_worker_is_on() -> None:
+    started = asyncio.Event()
+    release = asyncio.Event()
+
+    async def process(_: str) -> None:
+        started.set()
+        await release.wait()
+
+    source: QueueSource[str] = QueueSource()
+    lane: Lane[str] = Lane(
+        "triage",
+        1,
+        source,
+        process,
+        describe=lambda item: WorkItem(label=f"triaging {item}", pool_id=item),
+    )
+    lane.start()
+    await source.put("pool-1")
+    await asyncio.wait_for(started.wait(), timeout=1)
+
+    active = lane.active_work()
+    release.set()
+    await lane.stop()
+
+    assert active[0]["pool_id"] == "pool-1"
+    assert active[0]["label"] == "triaging pool-1"
+    assert active[0]["worker"] == 0
+    assert active[0]["elapsed"] >= 0
+    assert lane.active_work() == []
+
+
+def test_live_stats_expose_active_work_per_lane(harness: Harness) -> None:
+    lanes = harness.client.get("/api/live").json()["stats"]["lanes"]
+
+    assert lanes["remediate"]["active"] == []

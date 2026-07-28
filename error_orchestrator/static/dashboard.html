@@ -100,6 +100,8 @@ under the License.
   .slot { flex: 1; height: 9px; border-radius: 3px; background: var(--slate-soft); border: 1px solid var(--line); }
   .slot.busy { background: var(--accent); border-color: var(--accent); }
   .lane.maxed .slot.busy { background: var(--err); border-color: var(--err); }
+  .lane { cursor: pointer; }
+  .lane:hover { border-color: var(--accent); }
   .lane .foot { font-family: var(--mono); font-size: 10.5px; color: var(--ink-faint); display: flex; justify-content: space-between; }
   .maxed-tag { color: var(--err); font-weight: 600; }
 
@@ -158,6 +160,42 @@ under the License.
   .reviewer { display: flex; justify-content: space-between; align-items: center; font-family: var(--mono); font-size: 11.5px; }
   .load-bar { height: 7px; border-radius: 3px; background: var(--accent); }
   .load-track { flex: 1; margin: 0 10px; background: var(--slate-soft); border-radius: 3px; height: 7px; }
+
+  .tickets { max-height: 250px; overflow-y: auto; border-top: 1px solid var(--line); }
+  .ticket-row { padding: 9px 13px; border-bottom: 1px solid var(--line); cursor: pointer; display: grid; gap: 4px; }
+  .ticket-row:hover, tbody tr.clickable:hover { background: var(--accent-soft); }
+  .ticket-row .line { display: flex; justify-content: space-between; align-items: center; gap: 8px; }
+  .ticket-row .title { font-size: 12.5px; }
+  tbody tr.clickable { cursor: pointer; }
+
+  .scrim { position: fixed; inset: 0; background: rgba(20, 20, 18, 0.35); display: none; z-index: 20; }
+  .scrim.open { display: block; }
+  .drawer {
+    position: fixed; top: 0; right: 0; bottom: 0; width: min(720px, 92vw); z-index: 21;
+    background: var(--panel); border-left: 1px solid var(--line); transform: translateX(100%);
+    transition: transform 0.18s ease-out; display: flex; flex-direction: column;
+  }
+  .drawer.open { transform: none; }
+  .drawer-head { padding: 15px 18px; border-bottom: 1px solid var(--line); background: #fafaf8; display: grid; gap: 6px; }
+  .drawer-head .line { display: flex; align-items: center; gap: 9px; justify-content: space-between; }
+  .drawer-body { flex: 1; overflow-y: auto; padding: 16px 18px; display: grid; gap: 16px; }
+  .drawer-actions { padding: 12px 18px; border-top: 1px solid var(--line); background: #fafaf8; display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+  .section-title { font-size: 10.5px; text-transform: uppercase; letter-spacing: 0.06em; color: var(--ink-dim); margin-bottom: 7px; }
+  .kv { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 9px; font-family: var(--mono); font-size: 11.5px; }
+  .kv div span { display: block; color: var(--ink-faint); font-size: 10.5px; }
+  pre.diff { margin: 0; padding: 11px 13px; background: #fbfbf9; border: 1px solid var(--line); border-radius: 6px; font-family: var(--mono); font-size: 11px; line-height: 1.5; overflow-x: auto; max-height: 320px; }
+  pre.diff .add { color: var(--ok); }
+  pre.diff .del { color: var(--err); }
+  pre.diff .hunk { color: var(--accent); }
+  .instance { border: 1px solid var(--line); border-radius: 6px; padding: 8px 11px; margin-bottom: 7px; font-family: var(--mono); font-size: 11px; }
+  .instance .meta { color: var(--ink-faint); display: flex; gap: 10px; flex-wrap: wrap; margin-top: 3px; }
+  .history-step { font-family: var(--mono); font-size: 11px; padding: 4px 0; border-bottom: 1px dashed var(--line); display: flex; gap: 9px; }
+  .drawer input[type=text], .drawer select { font: inherit; font-size: 12px; padding: 5px 8px; border: 1px solid var(--line); border-radius: 5px; background: #fff; }
+  .grow { flex: 1; min-width: 120px; }
+  .instance.clickable { cursor: pointer; }
+  .instance.clickable:hover { border-color: var(--accent); }
+  .instance .line { display: flex; justify-content: space-between; align-items: center; gap: 8px; }
+  button.danger { border-color: var(--err); color: var(--err); }
 </style>
 </head>
 <body>
@@ -210,6 +248,7 @@ under the License.
         <span class="pill" id="queue-pill">0 open</span>
       </div>
       <div class="reviewers" id="reviewers"></div>
+      <div class="tickets" id="tickets"></div>
     </div>
     <div class="panel">
       <div class="panel-header"><span>Activity</span><span class="pill" id="seq-pill">seq 0</span></div>
@@ -218,12 +257,28 @@ under the License.
   </div>
 </div>
 
+<div class="scrim" id="scrim"></div>
+<aside class="drawer" id="drawer">
+  <div class="drawer-head" id="drawer-head"></div>
+  <div class="drawer-body" id="drawer-body"></div>
+  <div class="drawer-actions" id="drawer-actions"></div>
+</aside>
+
 <script>
+// Activity kinds each lane is responsible for, for its work log.
+const LANE_KINDS = {
+  triage: ['triage', 'hash'],
+  remediate: ['remediate'],
+  risk_check: ['review', 'ok', 'warn'],
+};
 const STATE_ORDER = ['triaged', 'reproducing', 'fix_proposed', 'awaiting_review', 'auto_merged', 'could_not_reproduce'];
 let lastSeq = 0;
 let logLines = [];
 let previousState = {};
 let simRunning = true;
+let openTicket = null;
+let openLane = null;
+let reviewers = [];
 
 const $ = (id) => document.getElementById(id);
 
@@ -275,7 +330,7 @@ function renderLanes(data) {
     const maxed = lane.in_flight >= lane.capacity;
     const slots = Array.from({ length: lane.capacity }, (_, i) =>
       `<div class="slot ${i < lane.in_flight ? 'busy' : ''}"></div>`).join('');
-    return `<div class="lane ${maxed ? 'maxed' : ''}">
+    return `<div class="lane ${maxed ? 'maxed' : ''}" data-lane="${name}">
       <div class="top">
         <span class="name">${name} workers</span>
         <span class="count">${lane.in_flight}/${lane.capacity}</span>
@@ -287,6 +342,65 @@ function renderLanes(data) {
       </div>
     </div>`;
   }).join('');
+  document.querySelectorAll('[data-lane]').forEach((lane) => {
+    lane.onclick = () => { openLane = lane.dataset.lane; renderLaneLog(data); };
+  });
+  if (openLane) renderLaneLog(data);
+}
+
+function renderLaneLog(data) {
+  const lane = data.stats.lanes[openLane];
+  if (!lane) return;
+  const byPool = Object.fromEntries(data.pools.map((pool) => [pool.pool_id, pool]));
+  const slots = lane.active.map((work) => {
+    const pool = byPool[work.pool_id];
+    return `
+      <div class="instance ${work.pool_id ? 'clickable' : ''}" ${work.pool_id ? `data-work="${work.pool_id}"` : ''}>
+        <div class="line">
+          <b>worker ${work.worker}</b>
+          <span class="log-ts">${fmtAge(work.elapsed)} elapsed</span>
+        </div>
+        <div>${escapeHtml(work.label)}</div>
+        <div class="meta">
+          <span>${work.pool_id ? `pool ${work.pool_id.slice(0, 8)}` : 'no pool yet'}</span>
+          ${pool ? `<span>${pool.state.replace(/_/g, ' ')} · ${pool.occurrences} occurrences</span>` : ''}
+        </div>
+      </div>`;
+  }).join('');
+  const idle = lane.capacity - lane.active.length;
+  const kinds = LANE_KINDS[openLane] || [];
+  const events = logLines.filter((event) => kinds.includes(event.kind));
+  $('drawer-head').innerHTML = `
+    <div class="line">
+      <b>${openLane} workers — live work log</b>
+      <button id="t-close">Close</button>
+    </div>
+    <div class="line">
+      <span class="cat-meta">${lane.in_flight}/${lane.capacity} busy · ${lane.processed} done${lane.failed ? ` · ${lane.failed} failed` : ''}</span>
+      <span class="cat-meta">peak ${lane.max_in_flight}</span>
+    </div>`;
+  $('drawer-body').innerHTML = `
+    <div>
+      <div class="section-title">In flight</div>
+      ${slots || '<div class="empty">every worker is idle</div>'}
+      ${idle > 0 ? `<div class="cat-meta">${idle} idle slot${idle > 1 ? 's' : ''}</div>` : ''}
+    </div>
+    <div>
+      <div class="section-title">Recent lane activity</div>
+      ${events.slice(0, 40).map((event) => `
+        <div class="history-step">
+          <span class="log-ts">${new Date(event.at * 1000).toLocaleTimeString()}</span>
+          <span>${escapeHtml(event.message)}</span>
+        </div>`).join('') || '<div class="empty">no activity yet</div>'}
+    </div>`;
+  $('drawer-actions').innerHTML =
+    '<span class="cat-meta">click a worker to open the pool it is working on</span>';
+  $('t-close').onclick = closeDrawer;
+  document.querySelectorAll('[data-work]').forEach((slot) => {
+    slot.onclick = () => showTicket(slot.dataset.work);
+  });
+  $('drawer').classList.add('open');
+  $('scrim').classList.add('open');
 }
 
 function renderPools(data) {
@@ -314,7 +428,7 @@ function renderPools(data) {
       ? `<button class="tiny" data-clear="${pool.pool_id}">Clear</button>` : '';
     const merged = pool.merged_fingerprints.length
       ? ` · ${pool.merged_fingerprints.length} merged path${pool.merged_fingerprints.length > 1 ? 's' : ''}` : '';
-    return `<tr class="${changed ? 'changed' : ''} ${pool.cleared ? 'cleared' : ''}">
+    return `<tr class="clickable ${changed ? 'changed' : ''} ${pool.cleared ? 'cleared' : ''}" data-open="${pool.pool_id}">
       <td>
         <div class="cat-label">${escapeHtml(pool.title)}</div>
         <div class="cat-meta">${pool.fingerprint.slice(0, 10)}${merged}</div>
@@ -328,14 +442,41 @@ function renderPools(data) {
       <td>${action}</td>
     </tr>`;
   }).join('');
+  document.querySelectorAll('[data-open]').forEach((row) => {
+    row.onclick = () => showTicket(row.dataset.open);
+  });
   document.querySelectorAll('[data-clear]').forEach((button) => {
-    button.onclick = () => post(`/api/pools/${button.dataset.clear}/clear`, {}).then(refresh);
+    button.onclick = (event) => {
+      event.stopPropagation();
+      post(`/api/pools/${button.dataset.clear}/clear`, {}).then(refresh);
+    };
+  });
+}
+
+function renderTickets(data) {
+  const items = data.review.open;
+  $('tickets').innerHTML = items.length
+    ? items.map((item) => `
+      <div class="ticket-row" data-ticket="${item.pool_id}">
+        <div class="line">
+          <span class="title">${escapeHtml(item.title)}</span>
+          <span class="badge ${item.state}">${item.state.replace(/_/g, ' ')}</span>
+        </div>
+        <div class="line cat-meta">
+          <span>${item.assignee}</span>
+          <span>waiting ${fmtAge(data.now - item.assigned_at)}</span>
+        </div>
+      </div>`).join('')
+    : '<div class="empty">nothing waiting on a human</div>';
+  document.querySelectorAll('[data-ticket]').forEach((row) => {
+    row.onclick = () => showTicket(row.dataset.ticket);
   });
 }
 
 function renderReviewers(data) {
   const load = data.review.stats.load;
   const max = Math.max(1, ...Object.values(load));
+  reviewers = data.review.reviewers;
   $('queue-pill').textContent = `${data.review.stats.open} open · ${data.review.stats.cleared} cleared`;
   $('reviewers').innerHTML = Object.entries(load).map(([name, count]) => `
     <div class="reviewer">
@@ -355,6 +496,124 @@ function renderActivity(events) {
       <span class="log-dot ${event.kind}"></span>
       <span>${escapeHtml(event.message)}</span>
     </div>`).join('');
+}
+
+function renderDiff(diff) {
+  if (!diff) return '<div class="empty">no diff — nothing was reproduced</div>';
+  const body = escapeHtml(diff).split('\n').map((line) => {
+    if (line.startsWith('+')) return `<span class="add">${line}</span>`;
+    if (line.startsWith('-')) return `<span class="del">${line}</span>`;
+    if (line.startsWith('@@')) return `<span class="hunk">${line}</span>`;
+    return line;
+  }).join('\n');
+  return `<pre class="diff">${body}</pre>`;
+}
+
+function ticketActions(ticket) {
+  const options = reviewers.map((name) =>
+    `<option value="${name}" ${name === ticket.assignee ? 'selected' : ''}>${name}</option>`).join('');
+  if (ticket.cleared) {
+    return `<span class="cat-meta">cleared by ${ticket.human.cleared_by} — ${escapeHtml(ticket.resolution || '')}</span>`;
+  }
+  const buttons = [];
+  if (ticket.actions.includes('assign')) {
+    buttons.push(`<select id="t-assignee">${options}</select>`);
+    buttons.push('<button id="t-assign">Reassign</button>');
+  }
+  if (ticket.actions.includes('revert')) {
+    buttons.push('<button id="t-revert" class="danger">Revert merge</button>');
+  }
+  if (ticket.actions.includes('clear')) {
+    buttons.push('<input type="text" id="t-resolution" class="grow" placeholder="resolution…">');
+    buttons.push('<button id="t-clear" class="primary">Clear ticket</button>');
+  }
+  return buttons.join('') || '<span class="cat-meta">still in the pipeline — no human action yet</span>';
+}
+
+function renderTicket(ticket) {
+  $('drawer-head').innerHTML = `
+    <div class="line">
+      <b>${escapeHtml(ticket.title)}</b>
+      <button id="t-close">Close</button>
+    </div>
+    <div class="line">
+      <span>
+        <span class="badge ${ticket.state}">${ticket.state.replace(/_/g, ' ')}</span>
+        ${ticket.risk_tier ? `<span class="risk-tag ${ticket.risk_tier}">risk ${ticket.risk_tier}</span>` : ''}
+      </span>
+      <span class="cat-meta">${ticket.assignee ? `assigned to ${ticket.assignee}` : 'unassigned'}</span>
+    </div>`;
+  const links = [
+    ticket.triage_session_url ? `<a href="${ticket.triage_session_url}" target="_blank">triage session</a>` : '',
+    ticket.fix_session_url ? `<a href="${ticket.fix_session_url}" target="_blank">fix session</a>` : '',
+  ].filter(Boolean).join(' · ');
+  $('drawer-body').innerHTML = `
+    <div>
+      <div class="section-title">Ticket</div>
+      <div class="kv">
+        <div><span>fingerprint</span>${ticket.fingerprint.slice(0, 16)}</div>
+        <div><span>occurrences</span>${ticket.occurrences}</div>
+        <div><span>affected users</span>${ticket.affected_users}</div>
+        <div><span>merged paths</span>${ticket.merged_fingerprints.length}</div>
+        <div><span>priority</span>${ticket.priority.toFixed(2)}</div>
+        <div><span>test added</span>${ticket.test_added === null ? '–' : ticket.test_added}</div>
+      </div>
+      ${ticket.review_reason ? `<div class="cat-meta" style="margin-top:8px">why a human: ${escapeHtml(ticket.review_reason)}</div>` : ''}
+      ${ticket.risk_reasons.length ? `<div class="cat-meta">risk: ${ticket.risk_reasons.map(escapeHtml).join(', ')}</div>` : ''}
+      ${links ? `<div class="cat-meta" style="margin-top:6px">${links}</div>` : ''}
+    </div>
+    <div>
+      <div class="section-title">Proposed diff${ticket.fix_summary ? ` — ${escapeHtml(ticket.fix_summary)}` : ''}</div>
+      ${renderDiff(ticket.diff)}
+    </div>
+    <div>
+      <div class="section-title">Merged instances (${ticket.occurrences} total, latest ${ticket.instances.length})</div>
+      ${ticket.instances.map((instance) => `
+        <div class="instance">
+          <div>${escapeHtml(instance.message)}</div>
+          <div class="meta">
+            <span>${new Date(instance.at * 1000).toLocaleTimeString()}</span>
+            <span>${escapeHtml(instance.where)}</span>
+            <span>${instance.user_id ? `user ${escapeHtml(instance.user_id)}` : 'no user'}</span>
+          </div>
+        </div>`).join('') || '<div class="empty">no samples retained</div>'}
+    </div>
+    <div>
+      <div class="section-title">History</div>
+      ${ticket.history.map((step) => `
+        <div class="history-step">
+          <span class="log-ts">${new Date(step.at * 1000).toLocaleTimeString()}</span>
+          <span>${step.from || 'start'} → <b>${step.to}</b></span>
+          <span class="log-ts">${escapeHtml(step.reason || '')}</span>
+        </div>`).join('')}
+    </div>`;
+  $('drawer-actions').innerHTML = ticketActions(ticket);
+  $('t-close').onclick = closeDrawer;
+  const on = (id, handler) => { const el = $(id); if (el) el.onclick = handler; };
+  on('t-assign', () => post(`/api/pools/${ticket.pool_id}/assign`, { to: $('t-assignee').value })
+    .then(() => showTicket(ticket.pool_id)).then(refresh));
+  on('t-revert', () => post(`/api/pools/${ticket.pool_id}/revert`, { by: ticket.assignee })
+    .then(() => showTicket(ticket.pool_id)).then(refresh));
+  on('t-clear', () => post(`/api/pools/${ticket.pool_id}/clear`, {
+    by: ticket.assignee, resolution: $('t-resolution').value || undefined,
+  }).then(() => showTicket(ticket.pool_id)).then(refresh));
+}
+
+async function showTicket(poolId) {
+  const response = await fetch(`/api/pools/${poolId}`);
+  if (!response.ok) return;
+  openTicket = poolId;
+  openLane = null;
+  renderTicket(await response.json());
+  $('drawer').classList.add('open');
+  $('scrim').classList.add('open');
+}
+
+function closeDrawer() {
+  openTicket = null;
+  openLane = null;
+  $('drawer').classList.remove('open');
+  $('scrim').classList.remove('open');
 }
 
 function escapeHtml(value) {
@@ -389,13 +648,21 @@ async function refresh() {
   lastSeq = data.last_seq;
   $('seq-pill').textContent = `seq ${lastSeq}`;
   renderStats(data);
+  // Activity first: the lane work log reads from the merged log lines.
+  renderActivity(data.activity);
   renderLanes(data);
   renderPools(data);
   renderReviewers(data);
-  renderActivity(data.activity);
+  renderTickets(data);
   renderSimulator(data.simulator);
+  // The ticket is a live view: occurrences keep merging in while it is open.
+  // Re-rendering under a reviewer's cursor would eat their typing, so hold off
+  // while the drawer has focus.
+  if (openTicket && !$('drawer').contains(document.activeElement)) showTicket(openTicket);
 }
 
+$('scrim').onclick = closeDrawer;
+document.addEventListener('keydown', (event) => { if (event.key === 'Escape') closeDrawer(); });
 $('pause').onclick = () => post('/api/simulator', { running: !simRunning }).then(refresh);
 $('inject').onclick = () => post('/api/inject', { scenario: $('scenario').value || undefined }).then(refresh);
 $('burst').onclick = () => post('/api/inject', { scenario: $('scenario').value || undefined, count: 5 }).then(refresh);

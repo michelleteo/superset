@@ -47,10 +47,10 @@ from error_orchestrator.handlers import (
     TriageRequest,
 )
 from error_orchestrator.handlers.triage import MergeCandidate
-from error_orchestrator.lanes import Lane, QueueSource
+from error_orchestrator.lanes import Lane, QueueSource, WorkItem
 from error_orchestrator.models import ErrorEvent, ErrorPool, PoolState, ProposedFix
 from error_orchestrator.priority import compute_priority
-from error_orchestrator.review import ReviewItem, ReviewQueue
+from error_orchestrator.review import ReviewError, ReviewItem, ReviewQueue
 from error_orchestrator.risk_registry import RiskRegistry
 from error_orchestrator.state_machine import transition
 from error_orchestrator.store import IngestOutcome, IngestResult, PoolStore
@@ -103,18 +103,23 @@ class Orchestrator:
             self.config.triage_workers,
             self.triage_source,
             self._run_triage,
+            describe=self._describe_triage,
         )
         self.remediation_lane: Lane[ErrorPool] = Lane(
             "remediate",
             self.config.remediation_workers,
             self._next_remediation,
             self._run_remediation,
+            describe=lambda pool: WorkItem(
+                label=f"remediating {pool.title}", pool_id=pool.pool_id
+            ),
         )
         self.risk_lane: Lane[str] = Lane(
             "risk_check",
             self.config.risk_check_workers,
             self.risk_source,
             self._run_risk_check,
+            describe=self._describe_risk_check,
         )
         self._ingest_task: asyncio.Task[None] | None = None
         self._dropped_events = 0
@@ -450,7 +455,47 @@ class Orchestrator:
         )
         return item
 
+    def revert_merge(
+        self, pool_id: str, by: str | None = None, reason: str = ""
+    ) -> ReviewItem:
+        """A human rolls back an auto-merge; the category goes back on the board.
+
+        The merge is undone, so the pool leaves its terminal state and is
+        reassigned for review rather than being closed out.
+        """
+        pool = self.store.get(pool_id)
+        if pool is None:
+            raise ReviewError(f"unknown pool {pool_id}")
+        if pool.state is not PoolState.AUTO_MERGED:
+            raise ReviewError(
+                f"pool {pool_id} is in {pool.state.value}, not auto_merged"
+            )
+        detail = reason or "auto-merge reverted by a human"
+        transition(pool, PoolState.AWAITING_REVIEW, reason=f"human revert: {detail}")
+        pool.review_reason = detail
+        pool.merged_at = None
+        item = self.review_queue.assign(pool, to=by)
+        self._record("revert", pool, {"by": item.assignee, "reason": detail})
+        self.activity.publish(
+            "human",
+            f"{item.assignee} reverted the auto-merge of {pool.title}: {detail}",
+            pool_id=pool_id,
+            assignee=item.assignee,
+        )
+        return item
+
     # --------------------------------------------------------------- helpers
+
+    def _describe_triage(self, result: IngestResult) -> WorkItem:
+        return WorkItem(
+            label=f"triaging {result.event.message[:80]}",
+            pool_id=result.pool.pool_id if result.pool else None,
+        )
+
+    def _describe_risk_check(self, pool_id: str) -> WorkItem:
+        pool = self.store.get(pool_id)
+        title = pool.title if pool else pool_id[:12]
+        return WorkItem(label=f"risk-checking {title}", pool_id=pool_id)
 
     def _record(self, stage: str, pool: ErrorPool, detail: dict[str, Any]) -> None:
         self.decisions.append(
@@ -474,7 +519,11 @@ class Orchestrator:
                 "dropped_events": self._dropped_events,
             },
             "lanes": {
-                lane.name: {**lane.stats.as_dict(), "capacity": lane.concurrency}
+                lane.name: {
+                    **lane.stats.as_dict(),
+                    "capacity": lane.concurrency,
+                    "active": lane.active_work(),
+                }
                 for lane in (self.triage_lane, self.remediation_lane, self.risk_lane)
             },
             "pools": self.store.snapshot(),

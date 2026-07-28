@@ -32,6 +32,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import logging
+import time
 from dataclasses import dataclass, field
 from typing import Any, Awaitable, Callable, Generic, TypeVar
 
@@ -41,6 +42,33 @@ T = TypeVar("T")
 
 #: Safety net so a worker cannot park forever if a wakeup is ever missed.
 IDLE_POLL_SECONDS = 1.0
+
+
+@dataclass(frozen=True)
+class WorkItem:
+    """What a lane is about to work on, in terms the dashboard understands."""
+
+    label: str
+    pool_id: str | None = None
+
+
+@dataclass
+class ActiveWork:
+    """One occupied worker slot."""
+
+    worker: int
+    label: str
+    pool_id: str | None
+    started_at: float
+
+    def as_dict(self) -> dict[str, Any]:
+        return {
+            "worker": self.worker,
+            "label": self.label,
+            "pool_id": self.pool_id,
+            "started_at": self.started_at,
+            "elapsed": time.time() - self.started_at,
+        }
 
 
 @dataclass
@@ -69,6 +97,7 @@ class Lane(Generic[T]):
         source: Callable[[], Awaitable[T | None]],
         process: Callable[[T], Awaitable[Any]],
         idle_poll: float = IDLE_POLL_SECONDS,
+        describe: Callable[[T], WorkItem] | None = None,
     ) -> None:
         if concurrency < 1:
             raise ValueError(f"lane {name}: concurrency must be >= 1")
@@ -78,6 +107,9 @@ class Lane(Generic[T]):
         self._source = source
         self._process = process
         self._idle_poll = idle_poll
+        self._describe = describe
+        #: Worker index -> what that worker is on right now.
+        self.active: dict[int, ActiveWork] = {}
         self._semaphore = asyncio.Semaphore(concurrency)
         self._wakeup = asyncio.Event()
         self._workers: list[asyncio.Task[None]] = []
@@ -124,6 +156,14 @@ class Lane(Generic[T]):
                 await self._park()
                 continue
             async with self._semaphore:
+                if self._describe is not None:
+                    work = self._describe(item)
+                    self.active[index] = ActiveWork(
+                        worker=index,
+                        label=work.label,
+                        pool_id=work.pool_id,
+                        started_at=time.time(),
+                    )
                 self.stats.in_flight += 1
                 self.stats.max_in_flight = max(
                     self.stats.max_in_flight, self.stats.in_flight
@@ -138,6 +178,14 @@ class Lane(Generic[T]):
                     logger.exception("lane %s: handler failed", self.name)
                 finally:
                     self.stats.in_flight -= 1
+                    self.active.pop(index, None)
+
+    def active_work(self) -> list[dict[str, Any]]:
+        """Every occupied slot, oldest first."""
+        return [
+            work.as_dict()
+            for work in sorted(self.active.values(), key=lambda w: w.started_at)
+        ]
 
     async def _park(self) -> None:
         self._wakeup.clear()

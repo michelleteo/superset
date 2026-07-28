@@ -199,6 +199,20 @@ reviewer, plus a live activity feed of workers picking up and finishing work.
 Controls let you inject a named scenario, burst five at once, change the error
 rate or pause the stream.
 
+**Click a worker lane** for its live work log: which pool each busy slot is on,
+how long it has been there and what the lane has recently done. Clicking a
+worker opens the pool it is remediating.
+
+**Click any pool or queue item** for its ticket, which is what makes a terminal
+state actionable rather than a counter:
+
+| Ticket shows | Ticket lets a human |
+| --- | --- |
+| The proposed diff, coloured, plus whether a test came with it | Clear it with a resolution |
+| Every occurrence merged into the category, refreshed live | Reassign it to another reviewer |
+| Risk tier and the reasons a human was asked | Revert an auto-merge, which reopens it as `awaiting_review` |
+| The full state history and the Devin session links | |
+
 ### Options
 
 | Flag | Default | Purpose |
@@ -243,8 +257,10 @@ diffs on screen without the board going quiet.
 | `GET /api/live?since=<seq>` | Everything the UI renders; `since` returns only new activity |
 | `POST /api/simulator` | `{"running": false}` or `{"rate": 4}` |
 | `POST /api/inject` | `{"scenario": "redis_timeout", "count": 5}` |
+| `GET /api/pools/{id}` | One ticket: diff, merged instances, history, allowed actions |
 | `POST /api/pools/{id}/clear` | Human clears a terminal item |
 | `POST /api/pools/{id}/assign` | Reassign to another human |
+| `POST /api/pools/{id}/revert` | Roll back an auto-merge and put it back in review |
 
 ## Tests
 
