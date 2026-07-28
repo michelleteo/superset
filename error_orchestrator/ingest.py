@@ -29,7 +29,7 @@ from __future__ import annotations
 import contextlib
 import logging
 from dataclasses import dataclass
-from typing import Any, AsyncIterator
+from typing import Any, AsyncIterator, Awaitable, Callable, Sequence
 
 from starlette.applications import Starlette
 from starlette.requests import Request
@@ -121,16 +121,30 @@ class Endpoints:
         return JSONResponse(view)
 
 
-def create_app(orchestrator: Orchestrator) -> Starlette:
-    """Build the Starlette app wired to a (not yet started) orchestrator."""
+def create_app(
+    orchestrator: Orchestrator,
+    extra_routes: Sequence[Route] = (),
+    on_start: Sequence[Callable[[], None]] = (),
+    on_stop: Sequence[Callable[[], Awaitable[None]]] = (),
+) -> Starlette:
+    """Build the Starlette app wired to a (not yet started) orchestrator.
+
+    ``extra_routes`` lets an embedding process (the demo) mount its own
+    surface; ``on_start``/``on_stop`` hook companion tasks into the same
+    lifespan so they die with the server.
+    """
     endpoints = Endpoints(orchestrator)
 
     @contextlib.asynccontextmanager
     async def lifespan(_: Starlette) -> AsyncIterator[None]:
         orchestrator.start()
+        for start in on_start:
+            start()
         try:
             yield
         finally:
+            for stop in on_stop:
+                await stop()
             await orchestrator.stop()
 
     return Starlette(
@@ -140,6 +154,7 @@ def create_app(orchestrator: Orchestrator) -> Starlette:
             Route("/stats", endpoints.stats, methods=["GET"]),
             Route("/pools", endpoints.list_pools, methods=["GET"]),
             Route("/pools/{pool_id}", endpoints.get_pool, methods=["GET"]),
+            *extra_routes,
         ],
         lifespan=lifespan,
     )

@@ -30,6 +30,7 @@ import time
 from dataclasses import asdict, dataclass, field
 from typing import Any, Awaitable, Callable
 
+from error_orchestrator.activity import ActivityLog
 from error_orchestrator.config import OrchestratorConfig
 from error_orchestrator.devin_client import DevinClient, HttpDevinClient
 from error_orchestrator.handlers import (
@@ -49,6 +50,7 @@ from error_orchestrator.handlers.triage import MergeCandidate
 from error_orchestrator.lanes import Lane, QueueSource
 from error_orchestrator.models import ErrorEvent, ErrorPool, PoolState, ProposedFix
 from error_orchestrator.priority import compute_priority
+from error_orchestrator.review import ReviewItem, ReviewQueue
 from error_orchestrator.risk_registry import RiskRegistry
 from error_orchestrator.state_machine import transition
 from error_orchestrator.store import IngestOutcome, IngestResult, PoolStore
@@ -78,10 +80,14 @@ class Orchestrator:
         store: PoolStore | None = None,
         registry: RiskRegistry | None = None,
         merge_callback: MergeCallback | None = None,
+        activity: ActivityLog | None = None,
+        review_queue: ReviewQueue | None = None,
     ) -> None:
         self.config = config or OrchestratorConfig()
         self.store = store or PoolStore(weights=self.config.weights)
         self.registry = registry or RiskRegistry()
+        self.activity = activity or ActivityLog()
+        self.review_queue = review_queue or ReviewQueue()
         self.devin = devin or self._default_devin_client()
         self.decisions: list[DecisionRecord] = []
         self._merge_callback = merge_callback or self._default_merge_callback
@@ -175,10 +181,22 @@ class Orchestrator:
     async def handle_event(self, event: ErrorEvent) -> IngestResult:
         """Normalize + hash the event and route it. Cheap and synchronous."""
         result = self.store.record_event(event)
+        self.activity.mark("events")
         if result.outcome is IngestOutcome.EXISTING_POOL and result.pool is not None:
+            pool = result.pool
+            self.activity.publish(
+                "hash",
+                f"hash hit — {pool.title} occurrence #{pool.occurrences} "
+                "(O(1), no session spent)",
+                pool_id=pool.pool_id,
+            )
             # A hotter pool may now outrank whatever remediation is parked on.
             self.remediation_lane.notify()
         elif result.outcome is IngestOutcome.NEEDS_TRIAGE:
+            self.activity.publish(
+                "hash",
+                f"fingerprint miss — {result.canonical.title} queued for triage",
+            )
             await self.triage_source.put(result)
         return result
 
@@ -205,6 +223,10 @@ class Orchestrator:
         )
 
     async def _run_triage(self, result: IngestResult) -> None:
+        self.activity.publish(
+            "triage",
+            f"triage worker picked up {result.canonical.title}",
+        )
         request = self.build_triage_request(result)
         decision = await triage_handler(request, self.devin)
         self.apply_triage(result, decision)
@@ -218,6 +240,11 @@ class Orchestrator:
                 reason=f"triage merge: {decision.summary}",
             )
             self._record("triage", pool, {"action": "merge", "merged": True})
+            self.activity.publish(
+                "triage",
+                f"merged into existing category {pool.title} — not a new bug",
+                pool_id=pool.pool_id,
+            )
         else:
             pool = self.store.create_pool(
                 result.fingerprint,
@@ -226,6 +253,11 @@ class Orchestrator:
                 session_url=decision.session_url,
             )
             self._record("triage", pool, {"action": "new_category"})
+            self.activity.publish(
+                "triage",
+                f"new category {pool.title} — queued for remediation",
+                pool_id=pool.pool_id,
+            )
         self.remediation_lane.notify()
         return pool
 
@@ -249,6 +281,12 @@ class Orchestrator:
         )
 
     async def _run_remediation(self, pool: ErrorPool) -> None:
+        self.activity.publish(
+            "remediate",
+            f"remediation worker claimed {pool.title} "
+            f"(priority {pool.priority:.2f}, {pool.occurrences} occurrences)",
+            pool_id=pool.pool_id,
+        )
         outcome = await remediate_handler(
             self.build_remediation_request(pool), self.devin
         )
@@ -274,6 +312,12 @@ class Orchestrator:
                     "session_url": outcome.session_url,
                 },
             )
+            self.activity.publish(
+                "warn",
+                f"could not reproduce {pool.title} — needs a human",
+                pool_id=pool.pool_id,
+            )
+            self._enter_terminal(pool)
             return
         pool.proposed_fix = ProposedFix(
             diff=outcome.diff,
@@ -287,6 +331,13 @@ class Orchestrator:
             "remediate",
             pool,
             {"reproduced": True, "session_url": outcome.session_url},
+        )
+        self.activity.publish(
+            "remediate",
+            f"fix proposed for {pool.title}"
+            f"{' with a regression test' if outcome.test_added else ''}"
+            " — queued for risk check",
+            pool_id=pool.pool_id,
         )
         await self.risk_source.put(pool.pool_id)
         # A remediation slot just freed up: pull the next highest priority pool.
@@ -310,6 +361,11 @@ class Orchestrator:
         if pool is None or pool.state is not PoolState.FIX_PROPOSED:
             logger.warning("risk check skipped for unknown or stale pool %s", pool_id)
             return
+        self.activity.publish(
+            "review",
+            f"risk-check worker picked up {pool.title}",
+            pool_id=pool.pool_id,
+        )
         decision = await risk_check_handler(
             self.build_risk_request(pool), self.devin, self.registry
         )
@@ -323,9 +379,20 @@ class Orchestrator:
             transition(pool, PoolState.AUTO_MERGED, reason="risk check: auto-merged")
             pool.merged_at = time.time()
             await self._merge_callback(pool, decision)
+            self.activity.publish(
+                "ok",
+                f"auto-merged {pool.title} (risk {decision.tier.value})",
+                pool_id=pool.pool_id,
+            )
         else:
             pool.review_reason = "; ".join(decision.reasons) or "flagged for review"
             transition(pool, PoolState.AWAITING_REVIEW, reason=pool.review_reason)
+            self.activity.publish(
+                "warn",
+                f"flagged {pool.title} for human review "
+                f"(risk {decision.tier.value}, decided by {decision.decided_by})",
+                pool_id=pool.pool_id,
+            )
         self._record(
             "risk_check",
             pool,
@@ -338,6 +405,7 @@ class Orchestrator:
                 "review_session_url": decision.review_session_url,
             },
         )
+        self._enter_terminal(pool)
 
     async def _default_merge_callback(
         self, pool: ErrorPool, decision: RiskDecision
@@ -355,6 +423,32 @@ class Orchestrator:
             decision.tier.value,
             pool.proposed_fix.branch if pool.proposed_fix else None,
         )
+
+    # ----------------------------------------------------------- human queue
+
+    def _enter_terminal(self, pool: ErrorPool) -> None:
+        """Hand a terminal pool to a human; it stays open until they clear it."""
+        self.activity.mark("terminal")
+        item = self.review_queue.assign(pool)
+        self.activity.publish(
+            "human",
+            f"{pool.state.value} — assigned {pool.title} to {item.assignee}",
+            pool_id=pool.pool_id,
+            assignee=item.assignee,
+        )
+
+    def clear_review(
+        self, pool_id: str, by: str | None = None, resolution: str | None = None
+    ) -> ReviewItem:
+        """Record that a human closed out a terminal pool."""
+        item = self.review_queue.clear(pool_id, by=by, resolution=resolution)
+        self.activity.mark("cleared")
+        self.activity.publish(
+            "human",
+            f"{item.cleared_by} cleared {item.title}: {item.resolution}",
+            pool_id=pool_id,
+        )
+        return item
 
     # --------------------------------------------------------------- helpers
 
@@ -380,10 +474,16 @@ class Orchestrator:
                 "dropped_events": self._dropped_events,
             },
             "lanes": {
-                lane.name: lane.stats.as_dict()
+                lane.name: {**lane.stats.as_dict(), "capacity": lane.concurrency}
                 for lane in (self.triage_lane, self.remediation_lane, self.risk_lane)
             },
             "pools": self.store.snapshot(),
+            "review": self.review_queue.stats(),
+            "throughput": {
+                "events_per_min": round(self.activity.rate("events"), 1),
+                "terminal_per_min": round(self.activity.rate("terminal"), 1),
+                "cleared_per_min": round(self.activity.rate("cleared"), 1),
+            },
         }
 
     def pool_view(self, pool: ErrorPool) -> dict[str, Any]:
@@ -404,6 +504,11 @@ class Orchestrator:
                 else None
             ),
             "review_reason": pool.review_reason,
+            "human": (
+                item.as_dict()
+                if (item := self.review_queue.get(pool.pool_id)) is not None
+                else None
+            ),
             "triage_session_url": pool.triage_session_url,
             "fix_session_url": (
                 pool.proposed_fix.session_url if pool.proposed_fix else None

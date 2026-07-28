@@ -138,11 +138,113 @@ export MCP_ERROR_WEBHOOK_HEADERS='{"X-Webhook-Token": "s3cret"}'
 | `GET /pools?state=awaiting_review` | Categories, highest priority first |
 | `GET /pools/{pool_id}` | One category with its transition history and diff |
 
-`/stats` and `/pools` are the minimum needed to see the system working; the
-full observability layer is intentionally left for a follow-up.
-
 Auto-merge is a logged no-op unless `ERROR_ORCHESTRATOR_AUTO_MERGE_ENABLED=1`;
 pass a `merge_callback` to `Orchestrator` to perform the actual merge.
+
+## The demo
+
+One command starts everything — error simulator, orchestrator, human review
+queue and live dashboard — on a single port, with no Devin API key required:
+
+```bash
+pip install -r error_orchestrator/requirements.txt
+python -m error_orchestrator.demo --port 8099 --rate 2 --speed 2
+```
+
+Open <http://localhost:8099/>.
+
+### With Docker
+
+```bash
+# From the repository root.
+docker build -f error_orchestrator/Dockerfile -t error-orchestrator-demo .
+docker run --rm -p 8099:8099 error-orchestrator-demo --rate 3 --speed 2
+
+# Or:
+docker compose -f error_orchestrator/docker-compose.yml up --build
+```
+
+### What you are looking at
+
+```
+ simulator ──POST /webhook/errors──▶ orchestrator ──▶ human review queue
+     │                                    │                    │
+     └────────────── dashboard polls /api/live ────────────────┘
+```
+
+The simulator posts real webhook payloads over HTTP, so nothing about the
+pipeline is faked for the demo: the same fingerprinting, deduplication, lanes,
+risk registry and state machine run as in production. Only the Devin sessions
+are stood in for (`DemoDevinClient`), unless you ask for real ones.
+
+The stream mixes four kinds of traffic, so every path through the state machine
+is exercised continuously:
+
+| Traffic | What it proves |
+| --- | --- |
+| Exact repeats of a known error | O(1) hash dedup — occurrence count climbs, no session spent |
+| A known bug down a new code path | Triage merges the variant into its existing category |
+| A brand new error | Triage opens a new category and queues remediation |
+| Mutated errors (endless supply) | The demo never runs out of new categories to work |
+
+Remediation either proposes a fix or gives up (`could_not_reproduce`); the risk
+check then auto-merges low-risk diffs and flags migrations, security and large
+diffs for a human. **All three terminal states are assigned to a named human**
+and stay on the board until someone clears them — auto-merged included, since a
+merge still wants verifying.
+
+The dashboard shows worker saturation per lane (`2/3` with a red bar at
+capacity), queue depths, throughput per minute, the human backlog and load per
+reviewer, plus a live activity feed of workers picking up and finishing work.
+Controls let you inject a named scenario, burst five at once, change the error
+rate or pause the stream.
+
+### Options
+
+| Flag | Default | Purpose |
+| --- | --- | --- |
+| `--rate` | `1.5` | Simulated errors per second |
+| `--speed` | `1.0` | Session speed multiplier; higher makes states change faster |
+| `--duplicate-rate` / `--variant-rate` | `0.55` / `0.25` | Traffic mix |
+| `--review-interval` | `12` | Seconds between simulated human clears |
+| `--no-auto-review` | off | Leave every terminal item for a real human to clear in the UI |
+| `--reviewers` | four names | Who the backlog is assigned to |
+| `--seed` | none | Reproducible stream |
+| `--live-devin` | off | Use the real Devin API |
+| `--live-devin-budget` | `3` | Real sessions to spend before falling back to simulated ones (`0` = no limit) |
+| `--live-devin-stages` | `remediate` | Which lanes may spend a real session |
+
+Worker counts come from the environment, so you can watch the lanes saturate:
+
+```bash
+ERROR_ORCHESTRATOR_REMEDIATION_WORKERS=1 python -m error_orchestrator.demo --rate 4
+```
+
+### Real Devin sessions and real diffs
+
+`--live-devin` swaps the simulated session client for the real API, so
+remediation returns a diff Devin actually wrote against the repo:
+
+```bash
+export DEVIN_API_KEY=...
+export ERROR_ORCHESTRATOR_REPO=michelleteo/superset
+python -m error_orchestrator.demo --live-devin --rate 0.2 --live-devin-budget 2
+```
+
+Real sessions take minutes, which is at odds with a dashboard that has to keep
+moving, so by default only the first `--live-devin-budget` remediations go to
+the real API and the rest are simulated. That keeps genuine Devin-authored
+diffs on screen without the board going quiet.
+
+### Demo API
+
+| Endpoint | Purpose |
+| --- | --- |
+| `GET /api/live?since=<seq>` | Everything the UI renders; `since` returns only new activity |
+| `POST /api/simulator` | `{"running": false}` or `{"rate": 4}` |
+| `POST /api/inject` | `{"scenario": "redis_timeout", "count": 5}` |
+| `POST /api/pools/{id}/clear` | Human clears a terminal item |
+| `POST /api/pools/{id}/assign` | Reassign to another human |
 
 ## Tests
 

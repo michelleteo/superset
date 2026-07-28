@@ -1,0 +1,409 @@
+<!DOCTYPE html>
+<!--
+Licensed to the Apache Software Foundation (ASF) under one
+or more contributor license agreements.  See the NOTICE file
+distributed with this work for additional information
+regarding copyright ownership.  The ASF licenses this file
+to you under the Apache License, Version 2.0 (the
+"License"); you may not use this file except in compliance
+with the License.  You may obtain a copy of the License at
+
+  http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing,
+software distributed under the License is distributed on an
+"AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+KIND, either express or implied.  See the License for the
+specific language governing permissions and limitations
+under the License.
+-->
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Error Orchestrator — Live Pipeline</title>
+<style>
+  :root {
+    --paper: #f4f5f2;
+    --panel: #ffffff;
+    --ink: #1b2430;
+    --ink-dim: #5b6472;
+    --ink-faint: #8a929e;
+    --line: #d8dbd4;
+    --accent: #1f6f78;
+    --accent-soft: #e4eeed;
+    --ok: #2f8f5b;
+    --ok-soft: #e5f3ea;
+    --warn: #b3781c;
+    --warn-soft: #faf0dd;
+    --err: #b3402f;
+    --err-soft: #fbe9e6;
+    --slate: #6b7280;
+    --slate-soft: #edeeec;
+    --mono: "IBM Plex Mono", "SFMono-Regular", Consolas, monospace;
+    --sans: "Inter", -apple-system, "Segoe UI", sans-serif;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--paper); color: var(--ink);
+    font-family: var(--sans); padding: 26px 32px 50px;
+  }
+  header {
+    display: flex; justify-content: space-between; align-items: flex-start;
+    gap: 20px; border-bottom: 1px solid var(--line);
+    padding-bottom: 16px; margin-bottom: 20px; flex-wrap: wrap;
+  }
+  h1 { font-size: 19px; font-weight: 600; margin: 0; letter-spacing: -0.01em; }
+  .sub { font-family: var(--mono); font-size: 11.5px; color: var(--ink-dim); margin-top: 4px; }
+  .live-tag {
+    display: inline-flex; align-items: center; gap: 6px; font-family: var(--mono);
+    font-size: 11px; font-weight: 600; text-transform: uppercase;
+    letter-spacing: 0.05em; color: var(--err); margin-left: 10px;
+  }
+  .live-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--err); animation: pulse 1.4s ease-in-out infinite; }
+  .live-tag.paused { color: var(--ink-faint); }
+  .live-tag.paused .live-dot { background: var(--ink-faint); animation: none; }
+  @keyframes pulse { 0%,100% { opacity: 1; } 50% { opacity: 0.25; } }
+
+  .controls { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+  button {
+    font-family: var(--sans); font-size: 12.5px; font-weight: 600; padding: 8px 13px;
+    border-radius: 6px; border: 1px solid var(--line); background: var(--panel);
+    color: var(--ink); cursor: pointer;
+  }
+  button:hover { border-color: var(--accent); color: var(--accent); }
+  button.primary { background: var(--ink); color: #fff; border-color: var(--ink); }
+  button.primary:hover { opacity: 0.9; color: #fff; }
+  button.tiny { font-size: 11px; padding: 4px 9px; }
+  select, input[type=range] {
+    font-family: var(--mono); font-size: 12px; padding: 7px 9px; border-radius: 6px;
+    border: 1px solid var(--line); background: var(--panel); color: var(--ink);
+  }
+  label.inline { font-family: var(--mono); font-size: 11px; color: var(--ink-dim); display: flex; align-items: center; gap: 6px; }
+
+  .stats { display: grid; grid-template-columns: repeat(8, 1fr); gap: 10px; margin-bottom: 18px; }
+  .stat { background: var(--panel); border: 1px solid var(--line); border-radius: 6px; padding: 12px 13px; }
+  .stat .label { font-size: 10px; text-transform: uppercase; letter-spacing: 0.06em; color: var(--ink-dim); margin-bottom: 5px; }
+  .stat .value { font-family: var(--mono); font-size: 21px; font-weight: 600; }
+  .stat .foot { font-family: var(--mono); font-size: 10.5px; color: var(--ink-faint); margin-top: 3px; }
+  .stat.ok .value { color: var(--ok); }
+  .stat.warn .value { color: var(--warn); }
+  .stat.err .value { color: var(--err); }
+  .stat.accent .value { color: var(--accent); }
+
+  .lanes { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; margin-bottom: 20px; }
+  .lane { background: var(--panel); border: 1px solid var(--line); border-radius: 6px; padding: 12px 14px; }
+  .lane .top { display: flex; justify-content: space-between; align-items: baseline; }
+  .lane .name { font-size: 11px; text-transform: uppercase; letter-spacing: 0.06em; color: var(--ink-dim); }
+  .lane .count { font-family: var(--mono); font-size: 14px; font-weight: 600; }
+  .slots { display: flex; gap: 4px; margin: 9px 0 6px; }
+  .slot { flex: 1; height: 9px; border-radius: 3px; background: var(--slate-soft); border: 1px solid var(--line); }
+  .slot.busy { background: var(--accent); border-color: var(--accent); }
+  .lane.maxed .slot.busy { background: var(--err); border-color: var(--err); }
+  .lane .foot { font-family: var(--mono); font-size: 10.5px; color: var(--ink-faint); display: flex; justify-content: space-between; }
+  .maxed-tag { color: var(--err); font-weight: 600; }
+
+  .layout { display: grid; grid-template-columns: 1.65fr 1fr; gap: 18px; align-items: start; }
+  .stack { display: grid; gap: 18px; }
+  .panel { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; overflow: hidden; }
+  .panel-header {
+    padding: 11px 15px; border-bottom: 1px solid var(--line); background: #fafaf8;
+    font-size: 11px; text-transform: uppercase; letter-spacing: 0.06em; color: var(--ink-dim);
+    display: flex; justify-content: space-between; align-items: center; gap: 10px;
+  }
+  .pill { font-family: var(--mono); font-size: 10.5px; padding: 2px 7px; border-radius: 10px; background: var(--slate-soft); color: var(--ink-dim); text-transform: none; letter-spacing: 0; }
+
+  table { width: 100%; border-collapse: collapse; }
+  thead th {
+    text-align: left; font-size: 10.5px; text-transform: uppercase; letter-spacing: 0.05em;
+    color: var(--ink-dim); padding: 9px 13px; border-bottom: 1px solid var(--line); background: #fafaf8;
+  }
+  tbody td { padding: 10px 13px; border-bottom: 1px solid var(--line); font-size: 12.5px; vertical-align: middle; }
+  tbody tr:last-child td { border-bottom: none; }
+  tbody tr.changed { animation: flash-row 1.4s ease-out; }
+  @keyframes flash-row { 0% { background: var(--accent-soft); } 100% { background: transparent; } }
+  tbody tr.cleared td { opacity: 0.5; }
+  .cat-label { font-weight: 500; }
+  .cat-meta { font-family: var(--mono); font-size: 10.5px; color: var(--ink-faint); margin-top: 2px; }
+  .num { font-family: var(--mono); font-size: 12px; }
+
+  .badge {
+    display: inline-block; font-family: var(--mono); font-size: 10.5px; padding: 3px 7px;
+    border-radius: 4px; font-weight: 600; text-transform: uppercase; white-space: nowrap;
+  }
+  .badge.triaged { background: var(--slate-soft); color: var(--slate); }
+  .badge.new { background: var(--slate-soft); color: var(--slate); }
+  .badge.reproducing { background: var(--accent-soft); color: var(--accent); }
+  .badge.fix_proposed { background: var(--accent-soft); color: var(--accent); }
+  .badge.could_not_reproduce { background: var(--err-soft); color: var(--err); }
+  .badge.awaiting_review { background: var(--warn-soft); color: var(--warn); }
+  .badge.auto_merged { background: var(--ok-soft); color: var(--ok); }
+  .risk-tag { font-family: var(--mono); font-size: 10.5px; color: var(--ink-faint); }
+  .risk-tag.high { color: var(--err); font-weight: 600; }
+  .risk-tag.medium { color: var(--warn); }
+
+  .empty { padding: 44px 20px; text-align: center; color: var(--ink-faint); font-size: 13px; }
+  .log { height: 330px; overflow-y: auto; padding: 8px 13px; font-family: var(--mono); font-size: 11px; }
+  .log-line { padding: 5px 0; border-bottom: 1px dashed var(--line); display: flex; gap: 8px; }
+  .log-line:last-child { border-bottom: none; }
+  .log-ts { color: var(--ink-faint); flex-shrink: 0; }
+  .log-dot { flex-shrink: 0; margin-top: 4px; width: 6px; height: 6px; border-radius: 50%; background: var(--slate); }
+  .log-dot.triage, .log-dot.remediate, .log-dot.review { background: var(--accent); }
+  .log-dot.ok { background: var(--ok); }
+  .log-dot.warn { background: var(--warn); }
+  .log-dot.err { background: var(--err); }
+  .log-dot.human { background: #7c5cbf; }
+
+  .reviewers { padding: 10px 13px; display: grid; gap: 7px; }
+  .reviewer { display: flex; justify-content: space-between; align-items: center; font-family: var(--mono); font-size: 11.5px; }
+  .load-bar { height: 7px; border-radius: 3px; background: var(--accent); }
+  .load-track { flex: 1; margin: 0 10px; background: var(--slate-soft); border-radius: 3px; height: 7px; }
+</style>
+</head>
+<body>
+
+<header>
+  <div>
+    <h1>Error Orchestrator — Live Pipeline
+      <span class="live-tag" id="live-tag"><span class="live-dot"></span><span id="live-text">LIVE</span></span>
+    </h1>
+    <div class="sub">simulated Superset errors → /webhook/errors → triage → remediate → risk check → human queue</div>
+  </div>
+  <div class="controls">
+    <select id="scenario"><option value="">Inject error…</option></select>
+    <button id="inject">Trigger</button>
+    <button id="burst">Burst ×5</button>
+    <label class="inline">rate
+      <input type="range" id="rate" min="0.2" max="8" step="0.2">
+      <span id="rate-val" class="num">–</span>/s
+    </label>
+    <button id="pause" class="primary">Pause stream</button>
+  </div>
+</header>
+
+<div class="stats" id="stats"></div>
+<div class="lanes" id="lanes"></div>
+
+<div class="layout">
+  <div class="stack">
+    <div class="panel">
+      <div class="panel-header">
+        <span>Error pools</span>
+        <span class="pill" id="pool-count">0 categories</span>
+      </div>
+      <table>
+        <thead>
+          <tr>
+            <th>Category</th><th>State</th><th>Occ.</th><th>Users</th>
+            <th>Priority</th><th>Risk</th><th>Human</th><th></th>
+          </tr>
+        </thead>
+        <tbody id="rows"></tbody>
+      </table>
+    </div>
+  </div>
+
+  <div class="stack">
+    <div class="panel">
+      <div class="panel-header">
+        <span>Human queue</span>
+        <span class="pill" id="queue-pill">0 open</span>
+      </div>
+      <div class="reviewers" id="reviewers"></div>
+    </div>
+    <div class="panel">
+      <div class="panel-header"><span>Activity</span><span class="pill" id="seq-pill">seq 0</span></div>
+      <div class="log" id="log"></div>
+    </div>
+  </div>
+</div>
+
+<script>
+const STATE_ORDER = ['triaged', 'reproducing', 'fix_proposed', 'awaiting_review', 'auto_merged', 'could_not_reproduce'];
+let lastSeq = 0;
+let logLines = [];
+let previousState = {};
+let simRunning = true;
+
+const $ = (id) => document.getElementById(id);
+
+async function post(url, body) {
+  const response = await fetch(url, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body || {}),
+  });
+  return response.json().catch(() => ({}));
+}
+
+function fmtAge(seconds) {
+  if (seconds === null || seconds === undefined) return '–';
+  if (seconds < 60) return `${Math.round(seconds)}s`;
+  return `${Math.floor(seconds / 60)}m${String(Math.round(seconds % 60)).padStart(2, '0')}s`;
+}
+
+function stat(label, value, cls, foot) {
+  return `<div class="stat ${cls || ''}">
+    <div class="label">${label}</div>
+    <div class="value">${value}</div>
+    <div class="foot">${foot || ''}</div>
+  </div>`;
+}
+
+function renderStats(data) {
+  const s = data.stats;
+  const pools = s.pools;
+  const review = data.review.stats;
+  const active = (pools.triaged || 0) + (pools.reproducing || 0) + (pools.fix_proposed || 0);
+  $('stats').innerHTML = [
+    stat('Errors ingested', s.throughput.events_per_min.toFixed(0), 'accent', 'per minute'),
+    stat('Categories', Object.values(pools).reduce((a, b) => a + b, 0), '', `${s.queues.pending_triage} awaiting triage`),
+    stat('In flight', active, 'accent', `${s.queues.heap} queued for remediation`),
+    stat('Auto-merged', pools.auto_merged || 0, 'ok', 'risk check approved'),
+    stat('Awaiting review', pools.awaiting_review || 0, 'warn', 'flagged for a human'),
+    stat('Not reproduced', pools.could_not_reproduce || 0, 'err', 'handed to a human'),
+    stat('Human backlog', review.open, review.open > 6 ? 'err' : 'warn', `${review.cleared} cleared`),
+    stat('Mean clear time', fmtAge(review.mean_time_to_clear), '', `oldest ${fmtAge(review.oldest_open_age)}`),
+  ].join('');
+}
+
+function renderLanes(data) {
+  const lanes = data.stats.lanes;
+  const queues = data.stats.queues;
+  const depth = { triage: queues.triage, remediate: queues.heap, risk_check: queues.risk_check };
+  $('lanes').innerHTML = Object.entries(lanes).map(([name, lane]) => {
+    const maxed = lane.in_flight >= lane.capacity;
+    const slots = Array.from({ length: lane.capacity }, (_, i) =>
+      `<div class="slot ${i < lane.in_flight ? 'busy' : ''}"></div>`).join('');
+    return `<div class="lane ${maxed ? 'maxed' : ''}">
+      <div class="top">
+        <span class="name">${name} workers</span>
+        <span class="count">${lane.in_flight}/${lane.capacity}</span>
+      </div>
+      <div class="slots">${slots}</div>
+      <div class="foot">
+        <span>${depth[name] || 0} queued · ${lane.processed} done${lane.failed ? ` · ${lane.failed} failed` : ''}</span>
+        <span class="${maxed ? 'maxed-tag' : ''}">${maxed ? 'AT CAPACITY' : 'headroom'}</span>
+      </div>
+    </div>`;
+  }).join('');
+}
+
+function renderPools(data) {
+  const pools = [...data.pools].sort((a, b) => {
+    const rank = (p) => (p.cleared ? 2 : STATE_ORDER.indexOf(p.state) >= 4 ? 1 : 0);
+    return rank(a) - rank(b) || b.priority - a.priority;
+  });
+  $('pool-count').textContent = `${data.pools.length} categories`;
+  if (!pools.length) {
+    $('rows').innerHTML = '<tr><td colspan="8"><div class="empty">waiting for the first error…</div></td></tr>';
+    return;
+  }
+  $('rows').innerHTML = pools.map((pool) => {
+    const changed = previousState[pool.pool_id] && previousState[pool.pool_id] !== pool.state;
+    previousState[pool.pool_id] = pool.state;
+    const risk = pool.risk_tier
+      ? `<span class="risk-tag ${pool.risk_tier}">${pool.risk_tier}</span>`
+      : '<span class="risk-tag">–</span>';
+    const human = pool.assignee
+      ? (pool.cleared
+        ? `<span class="risk-tag">cleared · ${pool.resolution || ''}</span>`
+        : `<b>${pool.assignee}</b>`)
+      : '<span class="risk-tag">–</span>';
+    const action = pool.assignee && !pool.cleared
+      ? `<button class="tiny" data-clear="${pool.pool_id}">Clear</button>` : '';
+    const merged = pool.merged_fingerprints.length
+      ? ` · ${pool.merged_fingerprints.length} merged path${pool.merged_fingerprints.length > 1 ? 's' : ''}` : '';
+    return `<tr class="${changed ? 'changed' : ''} ${pool.cleared ? 'cleared' : ''}">
+      <td>
+        <div class="cat-label">${escapeHtml(pool.title)}</div>
+        <div class="cat-meta">${pool.fingerprint.slice(0, 10)}${merged}</div>
+      </td>
+      <td><span class="badge ${pool.state}">${pool.state.replace(/_/g, ' ')}</span></td>
+      <td class="num">${pool.occurrences}</td>
+      <td class="num">${pool.affected_users}</td>
+      <td class="num">${pool.priority.toFixed(2)}</td>
+      <td>${risk}</td>
+      <td>${human}</td>
+      <td>${action}</td>
+    </tr>`;
+  }).join('');
+  document.querySelectorAll('[data-clear]').forEach((button) => {
+    button.onclick = () => post(`/api/pools/${button.dataset.clear}/clear`, {}).then(refresh);
+  });
+}
+
+function renderReviewers(data) {
+  const load = data.review.stats.load;
+  const max = Math.max(1, ...Object.values(load));
+  $('queue-pill').textContent = `${data.review.stats.open} open · ${data.review.stats.cleared} cleared`;
+  $('reviewers').innerHTML = Object.entries(load).map(([name, count]) => `
+    <div class="reviewer">
+      <span>${name}</span>
+      <span class="load-track"><span class="load-bar" style="width:${(count / max) * 100}%"></span></span>
+      <span>${count}</span>
+    </div>`).join('') || '<div class="empty">no reviewers</div>';
+}
+
+function renderActivity(events) {
+  if (events.length) {
+    logLines = [...events.reverse(), ...logLines].slice(0, 120);
+  }
+  $('log').innerHTML = logLines.map((event) => `
+    <div class="log-line">
+      <span class="log-ts">${new Date(event.at * 1000).toLocaleTimeString()}</span>
+      <span class="log-dot ${event.kind}"></span>
+      <span>${escapeHtml(event.message)}</span>
+    </div>`).join('');
+}
+
+function escapeHtml(value) {
+  return String(value).replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+}
+
+function renderSimulator(sim) {
+  if (!sim) return;
+  simRunning = sim.running;
+  $('live-tag').className = `live-tag ${sim.running ? '' : 'paused'}`;
+  $('live-text').textContent = sim.running ? 'LIVE' : 'PAUSED';
+  $('pause').textContent = sim.running ? 'Pause stream' : 'Resume stream';
+  $('rate-val').textContent = sim.rate.toFixed(1);
+  if (document.activeElement !== $('rate')) $('rate').value = sim.rate;
+  if ($('scenario').options.length === 1) {
+    sim.scenarios.forEach((scenario) => {
+      const option = document.createElement('option');
+      option.value = scenario.key;
+      option.textContent = scenario.title;
+      $('scenario').appendChild(option);
+    });
+  }
+}
+
+async function refresh() {
+  let data;
+  try {
+    data = await (await fetch(`/api/live?since=${lastSeq}`)).json();
+  } catch (error) {
+    return;
+  }
+  lastSeq = data.last_seq;
+  $('seq-pill').textContent = `seq ${lastSeq}`;
+  renderStats(data);
+  renderLanes(data);
+  renderPools(data);
+  renderReviewers(data);
+  renderActivity(data.activity);
+  renderSimulator(data.simulator);
+}
+
+$('pause').onclick = () => post('/api/simulator', { running: !simRunning }).then(refresh);
+$('inject').onclick = () => post('/api/inject', { scenario: $('scenario').value || undefined }).then(refresh);
+$('burst').onclick = () => post('/api/inject', { scenario: $('scenario').value || undefined, count: 5 }).then(refresh);
+$('rate').oninput = () => { $('rate-val').textContent = Number($('rate').value).toFixed(1); };
+$('rate').onchange = () => post('/api/simulator', { rate: Number($('rate').value) }).then(refresh);
+
+refresh();
+setInterval(refresh, 1000);
+</script>
+</body>
+</html>
