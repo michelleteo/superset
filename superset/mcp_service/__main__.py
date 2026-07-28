@@ -128,7 +128,11 @@ def main() -> None:
 
         # stdio mode does not call configure_logging(), so attach the error
         # webhook handler here too (no-op when MCP_ERROR_WEBHOOK_URL is unset).
-        attach_webhook_handler()
+        # Pass the MCP Flask app so MCP_ERROR_WEBHOOK_* set in superset_config.py
+        # is honored, not just environment variables.
+        from superset.mcp_service.flask_singleton import get_flask_app
+
+        attach_webhook_handler(get_flask_app())
 
         # Capture any print statements during initialization
         captured_output = io.StringIO()
