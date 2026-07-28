@@ -1,0 +1,33 @@
+# Licensed to the Apache Software Foundation (ASF) under one
+# or more contributor license agreements.  See the NOTICE file
+# distributed with this work for additional information
+# regarding copyright ownership.  The ASF licenses this file
+# to you under the Apache License, Version 2.0 (the
+# "License"); you may not use this file except in compliance
+# with the License.  You may obtain a copy of the License at
+#
+#   http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing,
+# software distributed under the License is distributed on an
+# "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+# KIND, either express or implied.  See the License for the
+# specific language governing permissions and limitations
+# under the License.
+
+# Run from the repository root: docker compose -f error_orchestrator/docker-compose.yml up
+services:
+  demo:
+    build:
+      context: ..
+      dockerfile: error_orchestrator/Dockerfile
+    ports:
+      - "8099:8099"
+    environment:
+      ERROR_ORCHESTRATOR_REPO: michelleteo/superset
+      ERROR_ORCHESTRATOR_TRIAGE_WORKERS: "4"
+      ERROR_ORCHESTRATOR_REMEDIATION_WORKERS: "3"
+      ERROR_ORCHESTRATOR_RISK_CHECK_WORKERS: "2"
+      # Uncomment (and pass --live-devin below) for real Devin sessions:
+      # DEVIN_API_KEY: ${DEVIN_API_KEY}
+    command: ["--rate", "2", "--speed", "2"]

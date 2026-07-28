@@ -70,6 +70,16 @@ MCP_BUG_REPORT_CONTACT: str | None = None
 # MCP Debug mode - shows suppressed initialization output in stdio mode
 MCP_DEBUG = False
 
+# MCP error webhook - when a URL is set, every log record at or above
+# MCP_ERROR_WEBHOOK_MIN_LEVEL emitted by the superset/mcp/fastmcp loggers is
+# POSTed as JSON to that URL on a background thread. Disabled when unset.
+# These may also be supplied as environment variables of the same name.
+MCP_ERROR_WEBHOOK_URL: str | None = None
+MCP_ERROR_WEBHOOK_MIN_LEVEL = "WARNING"
+MCP_ERROR_WEBHOOK_TIMEOUT = 3
+# Extra HTTP headers for the webhook POST, e.g. {"Authorization": "Bearer ..."}
+MCP_ERROR_WEBHOOK_HEADERS: Dict[str, str] | None = None
+
 # MCP RBAC - when True, tools with class_permission_name are checked
 # against the FAB security_manager before execution.
 MCP_RBAC_ENABLED = True

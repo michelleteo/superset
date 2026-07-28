@@ -30,6 +30,7 @@ from typing import Annotated, Any, Callable
 import uvicorn
 from fastmcp.exceptions import ToolError
 from fastmcp.server.middleware import Middleware
+from flask import current_app, has_app_context
 from starlette.requests import ClientDisconnect
 
 from superset.mcp_service.app import create_mcp_app, init_fastmcp_server
@@ -47,6 +48,7 @@ from superset.mcp_service.middleware import (
     StructuredContentStripperMiddleware,
 )
 from superset.mcp_service.storage import _create_redis_store
+from superset.mcp_service.webhook_logging import attach_webhook_handler
 from superset.utils import json
 
 logger = logging.getLogger(__name__)
@@ -207,6 +209,30 @@ def configure_logging(debug: bool = False) -> None:
     logging.getLogger("mcp.server.lowlevel.server").addFilter(
         transport_disconnect_filter
     )
+
+    # Forward WARNING/ERROR records to an external webhook when configured.
+    # The filters above downgrade some ERRORs to WARNING, so the handler's
+    # default level is WARNING to keep those visible.
+    attach_webhook_handler(_resolve_flask_app())
+
+
+def _resolve_flask_app() -> Any | None:
+    """Return a Flask app to read webhook config from, or ``None``.
+
+    ``configure_logging()`` runs before an app context is entered, so
+    ``current_app`` is usually unavailable here. Fall back to the MCP Flask
+    singleton so ``MCP_ERROR_WEBHOOK_*`` set in ``superset_config.py`` is
+    honored, not just environment variables.
+    """
+    if has_app_context():
+        return current_app
+    try:
+        from superset.mcp_service.flask_singleton import get_flask_app
+
+        return get_flask_app()
+    except Exception:  # pylint: disable=broad-except
+        logger.debug("Could not resolve MCP Flask app for webhook", exc_info=True)
+        return None
 
 
 def create_event_store(config: dict[str, Any] | None = None) -> Any | None:
