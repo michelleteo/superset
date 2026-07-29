@@ -162,7 +162,11 @@ class HttpDevinClient:
                 )
             created = response.json()
             session_id = created["session_id"]
-            url = created.get("url") or SESSION_URL.format(session_id=session_id)
+            # The page is keyed by the bare id, while the API returns it
+            # prefixed.
+            url = created.get("url") or SESSION_URL.format(
+                session_id=session_id.removeprefix("devin-")
+            )
             deadline = asyncio.get_running_loop().time() + self._timeout
             while True:
                 if asyncio.get_running_loop().time() > deadline:

@@ -59,7 +59,7 @@ async def test_a_session_without_a_url_still_gets_a_link(
         monkeypatch, {"status_enum": "finished", "structured_output": {"ok": True}}
     )
 
-    assert result.url == "https://app.devin.ai/sessions/devin-abc"
+    assert result.url == "https://app.devin.ai/sessions/abc"
 
 
 @pytest.mark.asyncio

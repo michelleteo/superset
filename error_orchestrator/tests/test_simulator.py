@@ -208,3 +208,12 @@ async def test_demo_client_keeps_a_mutation_out_of_its_base_pool() -> None:
     output = (await client.run_session(prompt)).structured_output
 
     assert output["action"] == "new_category"
+
+
+@pytest.mark.asyncio
+async def test_a_simulated_session_does_not_pretend_to_have_a_page() -> None:
+    devin = DemoDevinClient(latency=INSTANT, seed=1)
+
+    result = await devin.run_session("triage this")
+
+    assert not result.url.startswith("http")

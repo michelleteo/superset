@@ -633,9 +633,15 @@ function renderTicket(ticket) {
       </span>
       <span class="cat-meta">${ticket.assignee ? `assigned to ${ticket.assignee}` : 'unassigned'}</span>
     </div>`;
+  // Only a real session has a page; a simulated one reads as a plain label.
+  const sessionLink = (label, url) => {
+    if (!url) return '';
+    if (!url.startsWith('http')) return `<span class="cat-meta">${label} (simulated)</span>`;
+    return `<a href="${url}" target="_blank">${label}</a>`;
+  };
   const links = [
-    ticket.triage_session_url ? `<a href="${ticket.triage_session_url}" target="_blank">triage session</a>` : '',
-    ticket.fix_session_url ? `<a href="${ticket.fix_session_url}" target="_blank">fix session</a>` : '',
+    sessionLink('triage session', ticket.triage_session_url),
+    sessionLink('fix session', ticket.fix_session_url),
   ].filter(Boolean).join(' · ');
   $('drawer-body').innerHTML = `
     <div>

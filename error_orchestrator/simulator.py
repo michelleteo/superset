@@ -837,7 +837,9 @@ class DemoDevinClient:
 
         return DevinSessionResult(
             session_id=session_id,
-            url=f"https://app.devin.ai/sessions/{session_id}",
+            # Not an app.devin.ai link: a simulated session has no page, and a
+            # link to one that 404s is worse than no link.
+            url=f"simulated:{session_id}",
             status="finished",
             structured_output=dict(self._respond(stage, prompt)),
         )
