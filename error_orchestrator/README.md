@@ -250,6 +250,7 @@ state actionable rather than a counter:
 | `--live-devin` | off | Use the real Devin API |
 | `--live-devin-budget` | `3` | Real sessions to spend before falling back to simulated ones (`0` = no limit) |
 | `--live-devin-stages` | `remediate` | Which lanes may spend a real session |
+| `--seeded-bugs` | off | Emit this repo's own reproducible defects instead of synthetic errors |
 | `--idle` | off | Boot without streaming, so the run starts from the UI |
 
 Worker counts come from flags or the environment, so you can watch the lanes
@@ -267,14 +268,33 @@ remediation returns a diff Devin actually wrote against the repo:
 
 ```bash
 export DEVIN_API_KEY=...
-export ERROR_ORCHESTRATOR_REPO=michelleteo/superset
-python -m error_orchestrator.demo --live-devin --rate 0.2 --live-devin-budget 2
+export ERROR_ORCHESTRATOR_REPO=michelleteo/superset_demo
+python -m error_orchestrator.demo \
+  --live-devin --seeded-bugs --rate 0.2 --live-devin-budget 2
 ```
 
 Real sessions take minutes, which is at odds with a dashboard that has to keep
 moving, so by default only the first `--live-devin-budget` remediations go to
 the real API and the rest are simulated. That keeps genuine Devin-authored
 diffs on screen without the board going quiet.
+
+**Pair `--live-devin` with `--seeded-bugs`.** The default traffic is synthetic:
+a real session clones the repo, fails to find the traceback and correctly
+reports `could_not_reproduce`. `--seeded-bugs` emits the defects in
+[`error_orchestrator/seeded/app.py`](seeded/app.py) instead — genuine bugs
+whose tracebacks are captured by *running* them, each with a one-line repro
+that a session can iterate against:
+
+```bash
+python -m error_orchestrator.seeded.reproduce seeded_datasource_none  # exit 1 until fixed
+```
+
+The repro command travels in the error message, so it reaches the remediation
+prompt and the ticket. `seeded bugs` is also a checkbox in the setup panel.
+
+The API key is never a setting: it is read from the environment only. If you
+distribute the image, each person should pass **their own** key
+(`docker run -e DEVIN_API_KEY=...`) so sessions bill to their account.
 
 ### Demo API
 

@@ -34,6 +34,7 @@ from error_orchestrator.config import OrchestratorConfig
 from error_orchestrator.devin_client import DevinClient, HttpDevinClient
 from error_orchestrator.orchestrator import Orchestrator
 from error_orchestrator.review import AutoReviewer, ReviewQueue
+from error_orchestrator.seeded.bugs import seeded_scenarios
 from error_orchestrator.settings import DemoSettings
 from error_orchestrator.simulator import (
     BudgetedDevinClient,
@@ -111,7 +112,9 @@ class DemoRuntime:
         self.config = self._config_for(settings)
         # One list, shared by the simulator and the session double: when the
         # simulator invents a category, the double still recognises it.
-        scenarios: list[ErrorScenario] = list(SCENARIOS)
+        scenarios: list[ErrorScenario] = (
+            seeded_scenarios() if settings.seeded_bugs else list(SCENARIOS)
+        )
         self.review_queue = ReviewQueue(settings.reviewers)
         self.orchestrator = Orchestrator(
             config=self.config,

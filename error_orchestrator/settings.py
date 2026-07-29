@@ -103,6 +103,9 @@ class DemoSettings:
     live_devin: bool = False
     live_devin_budget: int = 3
     live_devin_stages: tuple[str, ...] = ("remediate",)
+    #: Emit the repository's own seeded defects instead of synthetic ones, so
+    #: a real session has something it can actually reproduce and patch.
+    seeded_bugs: bool = False
 
     def __post_init__(self) -> None:
         self.validate()
@@ -175,6 +178,7 @@ class DemoSettings:
             live_devin_stages=_names(
                 payload, "live_devin_stages", self.live_devin_stages
             ),
+            seeded_bugs=_flag(payload, "seeded_bugs", self.seeded_bugs),
         )
         updated.validate()
         return updated
@@ -195,6 +199,7 @@ class DemoSettings:
             "live_devin": self.live_devin,
             "live_devin_budget": self.live_devin_budget,
             "live_devin_stages": list(self.live_devin_stages),
+            "seeded_bugs": self.seeded_bugs,
         }
 
 

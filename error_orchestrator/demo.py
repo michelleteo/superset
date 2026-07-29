@@ -59,6 +59,7 @@ def settings_from_args(args: argparse.Namespace) -> DemoSettings:
         live_devin=args.live_devin,
         live_devin_budget=args.live_devin_budget,
         live_devin_stages=tuple(args.live_devin_stages or ()),
+        seeded_bugs=args.seeded_bugs,
     )
 
 
@@ -154,6 +155,13 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         default=["remediate"],
         choices=["triage", "remediate", "risk_check"],
         help="with --live-devin: which lanes may spend a real session",
+    )
+    parser.add_argument(
+        "--seeded-bugs",
+        action="store_true",
+        help="emit the repository's own seeded defects "
+        "(error_orchestrator/seeded) instead of synthetic Superset errors, so a "
+        "real Devin session can reproduce and patch them",
     )
     parser.add_argument("--seed", type=int, default=None)
     parser.add_argument("--log-level", default="INFO")

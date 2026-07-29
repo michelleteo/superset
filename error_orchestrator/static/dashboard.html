@@ -273,6 +273,9 @@ under the License.
     </label>
     <label class="field check"><input type="checkbox" id="s-auto_review"> auto-clear the backlog</label>
     <label class="field check"><input type="checkbox" id="s-live_devin"> real Devin sessions</label>
+    <label class="field check"><input type="checkbox" id="s-seeded_bugs"> seeded real bugs
+      <span class="hint">emit this repo's own reproducible defects, so a real session can patch them</span>
+    </label>
     <label class="field">real session budget
       <input type="number" id="s-live_devin_budget" min="0" step="1">
       <span class="hint">0 = unlimited; the rest run simulated</span>
@@ -361,7 +364,7 @@ let draftResolution = '';
 // being typed, so it is only filled from the server on load and after Reset.
 const NUMBER_SETTINGS = ['rate', 'speed', 'duplicate_rate', 'variant_rate', 'triage_workers',
   'remediation_workers', 'risk_check_workers', 'review_interval', 'live_devin_budget'];
-const FLAG_SETTINGS = ['auto_review', 'live_devin'];
+const FLAG_SETTINGS = ['auto_review', 'live_devin', 'seeded_bugs'];
 
 const $ = (id) => document.getElementById(id);
 
