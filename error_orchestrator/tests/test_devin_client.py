@@ -110,3 +110,20 @@ async def test_a_patch_rendered_as_its_own_block_is_still_the_diff(
     )
 
     assert result.structured_output["diff"].startswith("--- a/x.py")
+
+
+@pytest.mark.asyncio
+async def test_a_description_of_a_patch_is_not_taken_for_one(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    answer = '```json\n{"reproduced": true, "diff": "see attached fix.diff"}\n```'
+    result = await _run(
+        monkeypatch,
+        {
+            "status_enum": "blocked",
+            "structured_output": None,
+            "messages": [{"message": answer}],
+        },
+    )
+
+    assert result.structured_output["diff"] == ""

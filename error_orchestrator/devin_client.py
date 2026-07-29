@@ -51,6 +51,12 @@ _JSON_BLOCK = re.compile(r"```(?:json)?\s*(\{.*?\})\s*```", re.DOTALL)
 #: A session often renders its patch as its own block and leaves the JSON's
 #: ``diff`` empty, which would otherwise read as "fixed nothing".
 _DIFF_BLOCK = re.compile(r"```diff\s*(.*?)```", re.DOTALL)
+_PATCH_MARKERS = ("diff --git", "--- ", "@@")
+
+
+def _is_patch(value: object) -> bool:
+    """A patch, rather than a session describing where it put one."""
+    return isinstance(value, str) and any(m in value for m in _PATCH_MARKERS)
 
 
 def _reported_output(payload: Mapping[str, Any]) -> dict[str, Any]:
@@ -66,10 +72,11 @@ def _reported_output(payload: Mapping[str, Any]) -> dict[str, Any]:
             continue
         if not isinstance(parsed, dict):
             continue
-        if not parsed.get("diff"):
+        if not _is_patch(parsed.get("diff")):
             block = _DIFF_BLOCK.search(str(message.get("message") or ""))
-            if block is not None:
-                parsed["diff"] = block.group(1).strip()
+            # Prose about where the patch went is not a patch: an empty diff is
+            # a state the orchestrator handles, a fake one is not.
+            parsed["diff"] = block.group(1).strip() if block else ""
         return parsed
     return {}
 
