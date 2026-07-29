@@ -37,6 +37,8 @@ from starlette.routing import Route
 from error_orchestrator.models import ErrorEvent, ErrorPool, PoolState
 from error_orchestrator.orchestrator import Orchestrator
 from error_orchestrator.review import ReviewError
+from error_orchestrator.runtime import DemoRuntime
+from error_orchestrator.settings import SettingsError
 from error_orchestrator.simulator import ErrorSimulator
 
 STATIC_DIR = Path(__file__).parent / "static"
@@ -62,6 +64,8 @@ class Dashboard:
 
     orchestrator: Orchestrator
     simulator: ErrorSimulator | None = None
+    #: Present when the dashboard may also start, reconfigure and reset the run.
+    runtime: DemoRuntime | None = None
 
     # ------------------------------------------------------------- read side
 
@@ -88,6 +92,7 @@ class Dashboard:
             ],
             "last_seq": orchestrator.activity.last_seq,
             "simulator": self.simulator.status() if self.simulator else None,
+            "runtime": self.runtime.status() if self.runtime else None,
         }
 
     @staticmethod
@@ -214,11 +219,40 @@ class Dashboard:
             return JSONResponse({"error": str(error)}, status_code=409)
         return JSONResponse(item.as_dict())
 
+    async def get_settings(self, _: Request) -> Response:
+        if self.runtime is None:
+            return JSONResponse({"error": "run is not reconfigurable"}, status_code=404)
+        return JSONResponse(self.runtime.status())
+
+    async def start_run(self, request: Request) -> Response:
+        """Apply the settings from the setup panel and start the pipeline."""
+        if self.runtime is None:
+            return JSONResponse({"error": "run is not reconfigurable"}, status_code=404)
+        body = await _json_body(request)
+        try:
+            settings = self.runtime.settings.merged(body)
+            await self.runtime.apply(settings)
+        except SettingsError as error:
+            return JSONResponse({"error": str(error)}, status_code=400)
+        except RuntimeError as error:
+            return JSONResponse({"error": str(error)}, status_code=409)
+        return JSONResponse(self.runtime.status())
+
+    async def reset_run(self, _: Request) -> Response:
+        """Wipe the board and go back to the settings the process started with."""
+        if self.runtime is None:
+            return JSONResponse({"error": "run is not reconfigurable"}, status_code=404)
+        await self.runtime.reset()
+        return JSONResponse(self.runtime.status())
+
     def routes(self) -> list[Route]:
         return [
             Route("/", self.index, methods=["GET"]),
             Route("/api/live", self.live, methods=["GET"]),
             Route("/api/simulator", self.control_simulator, methods=["POST"]),
+            Route("/api/settings", self.get_settings, methods=["GET"]),
+            Route("/api/settings", self.start_run, methods=["POST"]),
+            Route("/api/reset", self.reset_run, methods=["POST"]),
             Route("/api/inject", self.inject, methods=["POST"]),
             Route("/api/pools/{pool_id}", self.pool_detail, methods=["GET"]),
             Route("/api/pools/{pool_id}/clear", self.clear_pool, methods=["POST"]),

@@ -196,6 +196,20 @@ under the License.
   .instance.clickable:hover { border-color: var(--accent); }
   .instance .line { display: flex; justify-content: space-between; align-items: center; gap: 8px; }
   button.danger { border-color: var(--err); color: var(--err); }
+  /* run setup */
+  .setup { margin: 0 16px 12px; }
+  .setup-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(180px, 1fr)); gap: 10px 14px; padding: 12px 14px; }
+  .setup-grid.hidden { display: none; }
+  .field { display: flex; flex-direction: column; gap: 4px; font-size: 11px; color: var(--ink-dim); text-transform: uppercase; letter-spacing: 0.04em; }
+  .field input[type=number], .field input[type=text] {
+    background: #fff; border: 1px solid var(--line); color: var(--ink);
+    border-radius: 5px; padding: 5px 7px; font: inherit; font-family: var(--mono); font-size: 12px; text-transform: none;
+  }
+  .field.check { flex-direction: row; align-items: center; gap: 6px; color: var(--ink); font-size: 12px; text-transform: none; letter-spacing: 0; }
+  .field .hint { color: var(--ink-faint); font-size: 10px; text-transform: none; letter-spacing: 0; }
+  .setup-foot { display: flex; gap: 8px; align-items: center; padding: 0 14px 12px; flex-wrap: wrap; }
+  .setup-error { color: var(--err); font-size: 12px; }
+  .stages { display: flex; gap: 10px; font-size: 11px; color: var(--ink); text-transform: none; letter-spacing: 0; }
 </style>
 </head>
 <body>
@@ -218,6 +232,66 @@ under the License.
     <button id="pause" class="primary">Pause stream</button>
   </div>
 </header>
+
+<div class="panel setup">
+  <div class="panel-header">
+    <span>Run setup <span class="pill" id="run-state">–</span></span>
+    <button id="setup-toggle">Hide</button>
+  </div>
+  <div class="setup-grid" id="setup-grid">
+    <label class="field">errors / second
+      <input type="number" id="s-rate" min="0.1" step="0.1">
+    </label>
+    <label class="field">session speed ×
+      <input type="number" id="s-speed" min="0.1" step="0.5">
+      <span class="hint">higher finishes sessions sooner</span>
+    </label>
+    <label class="field">duplicate rate
+      <input type="number" id="s-duplicate_rate" min="0" max="1" step="0.05">
+    </label>
+    <label class="field">variant rate
+      <input type="number" id="s-variant_rate" min="0" max="1" step="0.05">
+    </label>
+    <label class="field">triage workers
+      <input type="number" id="s-triage_workers" min="1" step="1">
+    </label>
+    <label class="field">remediation workers
+      <input type="number" id="s-remediation_workers" min="1" step="1">
+      <span class="hint">lower this to watch a lane saturate</span>
+    </label>
+    <label class="field">risk-check workers
+      <input type="number" id="s-risk_check_workers" min="1" step="1">
+    </label>
+    <label class="field">seed
+      <input type="number" id="s-seed" step="1" placeholder="random">
+    </label>
+    <label class="field">reviewers
+      <input type="text" id="s-reviewers" placeholder="comma separated">
+    </label>
+    <label class="field">auto-review interval (s)
+      <input type="number" id="s-review_interval" min="1" step="1">
+    </label>
+    <label class="field check"><input type="checkbox" id="s-auto_review"> auto-clear the backlog</label>
+    <label class="field check"><input type="checkbox" id="s-live_devin"> real Devin sessions</label>
+    <label class="field">real session budget
+      <input type="number" id="s-live_devin_budget" min="0" step="1">
+      <span class="hint">0 = unlimited; the rest run simulated</span>
+    </label>
+    <div class="field">real sessions for
+      <div class="stages">
+        <label><input type="checkbox" class="stage" value="triage"> triage</label>
+        <label><input type="checkbox" class="stage" value="remediate"> remediate</label>
+        <label><input type="checkbox" class="stage" value="risk_check"> risk check</label>
+      </div>
+    </div>
+  </div>
+  <div class="setup-foot" id="setup-foot">
+    <button id="start" class="primary">Start run</button>
+    <button id="reset" class="danger">Reset</button>
+    <span class="pill" id="devin-availability">–</span>
+    <span class="setup-error" id="setup-error"></span>
+  </div>
+</div>
 
 <div class="stats" id="stats"></div>
 <div class="lanes" id="lanes"></div>
@@ -283,6 +357,11 @@ let reviewers = [];
 // was already on its way, so live refreshes pause while a human is in there.
 let drawerBusy = false;
 let draftResolution = '';
+// The setup panel is an editable form: a poll must never overwrite what is
+// being typed, so it is only filled from the server on load and after Reset.
+const NUMBER_SETTINGS = ['rate', 'speed', 'duplicate_rate', 'variant_rate', 'triage_workers',
+  'remediation_workers', 'risk_check_workers', 'review_interval', 'live_devin_budget'];
+const FLAG_SETTINGS = ['auto_review', 'live_devin'];
 
 const $ = (id) => document.getElementById(id);
 
@@ -648,6 +727,55 @@ function renderSimulator(sim) {
   }
 }
 
+function fillSetup(status) {
+  NUMBER_SETTINGS.forEach((key) => { $(`s-${key}`).value = status.settings[key]; });
+  FLAG_SETTINGS.forEach((key) => { $(`s-${key}`).checked = status.settings[key]; });
+  $('s-seed').value = status.settings.seed === null ? '' : status.settings.seed;
+  $('s-reviewers').value = status.settings.reviewers.join(', ');
+  document.querySelectorAll('.stage').forEach((box) => {
+    box.checked = status.settings.live_devin_stages.includes(box.value);
+  });
+}
+
+function readSetup() {
+  const payload = {};
+  NUMBER_SETTINGS.forEach((key) => { payload[key] = Number($(`s-${key}`).value); });
+  FLAG_SETTINGS.forEach((key) => { payload[key] = $(`s-${key}`).checked; });
+  payload.seed = $('s-seed').value === '' ? null : Number($('s-seed').value);
+  payload.reviewers = $('s-reviewers').value;
+  payload.live_devin_stages = [...document.querySelectorAll('.stage')]
+    .filter((box) => box.checked).map((box) => box.value);
+  return payload;
+}
+
+function renderRuntime(status) {
+  if (!status) return;
+  $('run-state').textContent = status.running ? 'running' : 'stopped';
+  $('start').textContent = status.running ? 'Restart with these settings' : 'Start run';
+  $('devin-availability').textContent = status.live_devin_available
+    ? `real Devin ready · ${status.repo}`
+    : 'no DEVIN_API_KEY — simulated sessions only';
+  $('s-live_devin').disabled = !status.live_devin_available;
+}
+
+async function applySetup(url) {
+  $('setup-error').textContent = '';
+  const body = url === '/api/reset' ? {} : readSetup();
+  const status = await post(url, body);
+  if (status.error) {
+    $('setup-error').textContent = status.error;
+    return;
+  }
+  // A rebuilt run starts its activity log from zero.
+  lastSeq = 0;
+  logLines = [];
+  previousState = {};
+  closeDrawer();
+  fillSetup(status);
+  renderRuntime(status);
+  refresh();
+}
+
 async function refresh() {
   let data;
   try {
@@ -665,6 +793,7 @@ async function refresh() {
   renderReviewers(data);
   renderTickets(data);
   renderSimulator(data.simulator);
+  renderRuntime(data.runtime);
   // The ticket is a live view: occurrences keep merging in while it is open.
   if (openTicket && !drawerBusy) showTicket(openTicket);
 }
@@ -683,7 +812,18 @@ $('inject').onclick = () => post('/api/inject', { scenario: $('scenario').value 
 $('burst').onclick = () => post('/api/inject', { scenario: $('scenario').value || undefined, count: 5 }).then(refresh);
 $('rate').oninput = () => { $('rate-val').textContent = Number($('rate').value).toFixed(1); };
 $('rate').onchange = () => post('/api/simulator', { rate: Number($('rate').value) }).then(refresh);
+$('start').onclick = () => applySetup('/api/settings');
+$('reset').onclick = () => applySetup('/api/reset');
+$('setup-toggle').onclick = () => {
+  const hidden = $('setup-grid').classList.toggle('hidden');
+  $('setup-toggle').textContent = hidden ? 'Show' : 'Hide';
+};
 
+fetch('/api/settings').then((response) => response.json()).then((status) => {
+  if (status.error) return;
+  fillSetup(status);
+  renderRuntime(status);
+});
 refresh();
 setInterval(refresh, 1000);
 </script>

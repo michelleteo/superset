@@ -34,93 +34,59 @@ from starlette.applications import Starlette
 
 from error_orchestrator.config import OrchestratorConfig
 from error_orchestrator.dashboard import Dashboard
-from error_orchestrator.devin_client import DevinClient, HttpDevinClient
-from error_orchestrator.ingest import create_app
-from error_orchestrator.orchestrator import Orchestrator
-from error_orchestrator.review import AutoReviewer, DEFAULT_REVIEWERS, ReviewQueue
-from error_orchestrator.simulator import (
-    BudgetedDevinClient,
-    DemoDevinClient,
-    ErrorScenario,
-    ErrorSimulator,
-    LatencyProfile,
-    SCENARIOS,
-    SimulatorConfig,
-    WebhookSink,
-)
+from error_orchestrator.ingest import create_app, Endpoints
+from error_orchestrator.review import DEFAULT_REVIEWERS
+from error_orchestrator.runtime import DemoRuntime
+from error_orchestrator.settings import DemoSettings, SettingsError
 
 logger = logging.getLogger("error_orchestrator.demo")
 
 
-def build_app(args: argparse.Namespace, config: OrchestratorConfig) -> Starlette:
-    """Assemble orchestrator + simulator + reviewers + dashboard into one app."""
-    # One list, shared by the simulator and the session double: when the
-    # simulator invents a new category, the double still recognises it.
-    scenarios: list[ErrorScenario] = list(SCENARIOS)
-    simulated = DemoDevinClient(
-        latency=LatencyProfile().scaled(1.0 / args.speed), scenarios=scenarios
-    )
-
-    devin: DevinClient = simulated
-    if args.live_devin:
-        live = HttpDevinClient(
-            api_key=config.devin_api_key or "",
-            api_base=config.devin_api_base,
-            poll_interval=config.devin_poll_interval,
-            timeout=config.devin_session_timeout,
-        )
-        devin = (
-            live
-            if args.live_devin_budget <= 0
-            else BudgetedDevinClient(
-                live,
-                simulated,
-                budget=args.live_devin_budget,
-                stages=tuple(args.live_devin_stages or ()),
-            )
-        )
-
-    review_queue = ReviewQueue(args.reviewers or DEFAULT_REVIEWERS)
-    orchestrator = Orchestrator(config=config, devin=devin, review_queue=review_queue)
-
-    sink = WebhookSink(
-        f"http://127.0.0.1:{config.port}/webhook/errors", token=config.webhook_token
-    )
-    simulator = ErrorSimulator(
-        sink,
-        SimulatorConfig(
-            rate=args.rate,
-            duplicate_rate=args.duplicate_rate,
-            variant_rate=args.variant_rate,
-            seed=args.seed,
-        ),
-        scenarios=scenarios,
-    )
-    reviewer = AutoReviewer(
-        review_queue,
-        interval=args.review_interval,
-        enabled=not args.no_auto_review,
-        clear=orchestrator.clear_review,
+def settings_from_args(args: argparse.Namespace) -> DemoSettings:
+    """The command line and the dashboard's setup panel produce the same thing."""
+    return DemoSettings(
+        rate=args.rate,
+        duplicate_rate=args.duplicate_rate,
+        variant_rate=args.variant_rate,
         seed=args.seed,
+        speed=args.speed,
+        triage_workers=args.triage_workers,
+        remediation_workers=args.remediation_workers,
+        risk_check_workers=args.risk_check_workers,
+        reviewers=tuple(args.reviewers or DEFAULT_REVIEWERS),
+        auto_review=not args.no_auto_review,
+        review_interval=args.review_interval,
+        live_devin=args.live_devin,
+        live_devin_budget=args.live_devin_budget,
+        live_devin_stages=tuple(args.live_devin_stages or ()),
     )
-    dashboard = Dashboard(orchestrator, simulator)
+
+
+def build_app(runtime: DemoRuntime) -> Starlette:
+    """Assemble the run plus its dashboard into one app.
+
+    The endpoints and the dashboard are bound to the runtime rather than to one
+    orchestrator, so Start and Reset can swap the run underneath them.
+    """
+    endpoints = Endpoints(runtime.orchestrator)
+    dashboard = Dashboard(runtime.orchestrator, runtime.simulator, runtime=runtime)
+    runtime.bind(endpoints, dashboard)
 
     def start() -> None:
-        simulator.start()
-        reviewer.start()
+        runtime.start_tasks()
         logger.info(
-            "demo ready: dashboard on http://localhost:%s/ (%s errors/s, "
-            "%s remediation workers)",
-            config.port,
-            args.rate,
-            config.remediation_workers,
+            "demo ready: dashboard on http://localhost:%s/ (%s)",
+            runtime.config.port,
+            "streaming" if runtime.running else "idle — press Start in the UI",
         )
 
     return create_app(
-        orchestrator,
+        runtime.orchestrator,
         extra_routes=dashboard.routes(),
         on_start=[start],
-        on_stop=[simulator.stop, reviewer.stop],
+        on_stop=[runtime.stop_tasks],
+        endpoints=endpoints,
+        autostart=False,
     )
 
 
@@ -144,6 +110,14 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     )
     parser.add_argument("--duplicate-rate", type=float, default=0.55)
     parser.add_argument("--variant-rate", type=float, default=0.25)
+    parser.add_argument("--triage-workers", type=int, default=None)
+    parser.add_argument("--remediation-workers", type=int, default=None)
+    parser.add_argument("--risk-check-workers", type=int, default=None)
+    parser.add_argument(
+        "--idle",
+        action="store_true",
+        help="boot without streaming, so the demo starts from the UI's Start button",
+    )
     parser.add_argument(
         "--review-interval",
         type=float,
@@ -203,14 +177,23 @@ def main(argv: list[str] | None = None) -> int:
         config.host = args.host
     if args.port:
         config.port = args.port
-    if args.speed <= 0:
-        logger.error("--speed must be positive")
-        return 2
     if args.live_devin and not config.devin_api_key:
         logger.error("--live-devin needs DEVIN_API_KEY")
         return 2
+    for name in ("triage_workers", "remediation_workers", "risk_check_workers"):
+        override = getattr(args, name)
+        if override is not None:
+            setattr(config, name, override)
+        else:
+            setattr(args, name, getattr(config, name))
 
-    app = build_app(args, config)
+    try:
+        settings = settings_from_args(args)
+    except SettingsError as error:
+        logger.error("invalid settings: %s", error)
+        return 2
+
+    app = build_app(DemoRuntime(config, settings, autostart=not args.idle))
     uvicorn.run(
         app,
         host=config.host,
