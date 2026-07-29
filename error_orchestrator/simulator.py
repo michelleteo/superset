@@ -484,6 +484,9 @@ class ErrorSimulator:
         self.scenarios = list(SCENARIOS) if scenarios is None else scenarios
         if not self.scenarios:
             raise ValueError("at least one scenario is required")
+        #: Mutations derive from the catalog the run started with, so a seeded
+        #: run never drifts back into synthetic categories.
+        self._catalog = list(self.scenarios)
         self.running = True
         self.emitted = 0
         self._rng = random.Random(self.config.seed)  # noqa: S311 - simulation only
@@ -579,7 +582,7 @@ class ErrorSimulator:
         scenario = (
             self._rng.choice(unseen)
             if unseen
-            else self.mutate(self._rng.choice(list(SCENARIOS)))
+            else self.mutate(self._rng.choice(self._catalog))
         )
         self._seen.add(scenario.key)
         return self.build_payload(scenario)

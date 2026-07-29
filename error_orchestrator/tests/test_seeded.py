@@ -26,6 +26,7 @@ from error_orchestrator.runtime import DemoRuntime
 from error_orchestrator.seeded.bugs import SEEDED_BUGS, seeded_scenarios, SeededBug
 from error_orchestrator.seeded.reproduce import main
 from error_orchestrator.settings import DemoSettings
+from error_orchestrator.simulator import ErrorSimulator, SimulatorConfig
 
 
 @pytest.mark.parametrize("bug", SEEDED_BUGS, ids=lambda bug: bug.key)
@@ -51,3 +52,20 @@ def test_seeded_mode_swaps_the_synthetic_catalog_for_the_real_one() -> None:
     keys = {scenario.key for scenario in runtime.simulator.scenarios}
 
     assert keys == {bug.key for bug in SEEDED_BUGS}
+
+
+def test_a_seeded_run_never_drifts_back_into_synthetic_categories() -> None:
+    async def sink(payloads: object) -> int:
+        return 0
+
+    simulator = ErrorSimulator(
+        sink,
+        SimulatorConfig(rate=1, duplicate_rate=0.0, variant_rate=0.0, seed=1),
+        scenarios=seeded_scenarios(),
+    )
+
+    for _ in range(50):
+        simulator.next_payload()
+
+    seeds = {bug.key for bug in SEEDED_BUGS}
+    assert all(s.key.split("~")[0] in seeds for s in simulator.scenarios)
