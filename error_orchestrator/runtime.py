@@ -200,9 +200,15 @@ class DemoRuntime:
         """Back to a clean board with the settings the process started with."""
         await self.apply(self.defaults, running=False)
 
+    def live_sessions(self) -> dict[str, object] | None:
+        """Real session spend, when this run has a budgeted client."""
+        devin = self.orchestrator.devin
+        return devin.live_status() if isinstance(devin, BudgetedDevinClient) else None
+
     def status(self) -> dict[str, object]:
         return {
             "running": self.running,
+            "live_sessions": self.live_sessions(),
             "settings": self.settings.as_dict(),
             "defaults": self.defaults.as_dict(),
             "live_devin_available": self.live_devin_available,

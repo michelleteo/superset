@@ -861,6 +861,10 @@ class BudgetedDevinClient:
         #: Which lanes may use the real API; empty means all of them.
         self.stages = tuple(stages)
         self.spent = 0
+        #: Real sessions in flight, by stage, with when they started. A real
+        #: session holds its worker for minutes, so the dashboard needs to be
+        #: able to say that a slot is waiting on Devin rather than wedged.
+        self.in_flight: dict[str, float] = {}
 
     def _use_live(self, stage: str) -> bool:
         if self.stages and stage not in self.stages:
@@ -884,9 +888,26 @@ class BudgetedDevinClient:
         logger.info(
             "spending real Devin session %s/%s on %s", self.spent, self.budget, stage
         )
-        return await self.live.run_session(
-            prompt, title=title, tags=tags, idempotent=idempotent
-        )
+        key = f"{stage}:{self.spent}"
+        self.in_flight[key] = time.time()
+        try:
+            return await self.live.run_session(
+                prompt, title=title, tags=tags, idempotent=idempotent
+            )
+        finally:
+            self.in_flight.pop(key, None)
+
+    def live_status(self) -> dict[str, Any]:
+        """What the dashboard says about real session spend."""
+        now = time.time()
+        return {
+            "spent": self.spent,
+            "budget": self.budget,
+            "in_flight": [
+                {"stage": key.split(":")[0], "elapsed": now - started}
+                for key, started in sorted(self.in_flight.items())
+            ],
+        }
 
 
 def _first_candidate_pool_id(prompt: str, scenario: ErrorScenario | None) -> str | None:

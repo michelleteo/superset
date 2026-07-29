@@ -114,6 +114,7 @@ under the License.
     display: flex; justify-content: space-between; align-items: center; gap: 10px;
   }
   .pill { font-family: var(--mono); font-size: 10.5px; padding: 2px 7px; border-radius: 10px; background: var(--slate-soft); color: var(--ink-dim); text-transform: none; letter-spacing: 0; }
+  .pill.busy { background: var(--amber-soft, #fdf0d5); color: var(--amber, #8a5a00); }
 
   table { width: 100%; border-collapse: collapse; }
   thead th {
@@ -292,6 +293,7 @@ under the License.
     <button id="start" class="primary">Start run</button>
     <button id="reset" class="danger">Reset</button>
     <span class="pill" id="devin-availability">–</span>
+    <span class="pill" id="live-sessions" style="display:none">–</span>
     <span class="setup-error" id="setup-error"></span>
   </div>
 </div>
@@ -759,6 +761,22 @@ function renderRuntime(status) {
     ? `real Devin ready · ${status.repo}`
     : 'no DEVIN_API_KEY — simulated sessions only';
   $('s-live_devin').disabled = !status.live_devin_available;
+  renderLiveSessions(status.live_sessions);
+}
+
+// A real session holds its worker for minutes: without this the slot looks
+// wedged rather than "waiting on Devin".
+function renderLiveSessions(live) {
+  const pill = $('live-sessions');
+  if (!live) { pill.style.display = 'none'; return; }
+  pill.style.display = '';
+  const running = live.in_flight
+    .map((s) => `${s.stage} ${Math.round(s.elapsed)}s`)
+    .join(', ');
+  pill.textContent = running
+    ? `real session running · ${running}`
+    : `real sessions spent ${live.spent}/${live.budget}`;
+  pill.classList.toggle('busy', live.in_flight.length > 0);
 }
 
 async function applySetup(url) {

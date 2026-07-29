@@ -19,6 +19,8 @@
 
 from __future__ import annotations
 
+import time
+
 import pytest
 
 from error_orchestrator.config import OrchestratorConfig
@@ -26,7 +28,11 @@ from error_orchestrator.runtime import DemoRuntime
 from error_orchestrator.seeded.bugs import SEEDED_BUGS, seeded_scenarios, SeededBug
 from error_orchestrator.seeded.reproduce import main
 from error_orchestrator.settings import DemoSettings
-from error_orchestrator.simulator import ErrorSimulator, SimulatorConfig
+from error_orchestrator.simulator import (
+    BudgetedDevinClient,
+    ErrorSimulator,
+    SimulatorConfig,
+)
 
 
 @pytest.mark.parametrize("bug", SEEDED_BUGS, ids=lambda bug: bug.key)
@@ -69,3 +75,22 @@ def test_a_seeded_run_never_drifts_back_into_synthetic_categories() -> None:
 
     seeds = {bug.key for bug in SEEDED_BUGS}
     assert all(s.key.split("~")[0] in seeds for s in simulator.scenarios)
+
+
+def test_a_real_session_in_flight_is_visible_to_the_dashboard() -> None:
+    runtime = DemoRuntime(
+        OrchestratorConfig(devin_api_key="k"),
+        DemoSettings(rate=0.1, live_devin=True, live_devin_budget=2),
+        autostart=False,
+    )
+    devin = runtime.orchestrator.devin
+    assert isinstance(devin, BudgetedDevinClient)
+    devin.in_flight["remediate:1"] = time.time()
+
+    live = runtime.status()["live_sessions"]
+
+    assert live == {
+        "spent": 0,
+        "budget": 2,
+        "in_flight": [{"stage": "remediate", "elapsed": pytest.approx(0, abs=1)}],
+    }
