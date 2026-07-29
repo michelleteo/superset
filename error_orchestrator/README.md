@@ -164,8 +164,25 @@ docker run --rm -p 8099:8099 error-orchestrator-demo --rate 3 --speed 2
 docker compose -f error_orchestrator/docker-compose.yml up --build
 ```
 
-Add `--idle` to boot with an empty board and start the run from the browser
-instead of from arguments.
+Both `-f` flags matter. Without them Docker picks up the repository root's own
+`Dockerfile` and `docker-compose.yml`, which build **Superset** and refuse to
+start with *"A Default SECRET_KEY was detected"*. This demo never imports
+Superset and needs no `SECRET_KEY`.
+
+Every argument is optional — `docker run --rm -p 8099:8099
+error-orchestrator-demo` streams with the defaults below. Add `--idle` to boot
+with an empty board and start the run from the browser instead.
+
+For real Devin sessions, pass a key at run time; it is never built into the
+image, so each person runs the image with **their own** key and their own
+sessions:
+
+```bash
+docker run --rm -p 8099:8099 \
+  -e DEVIN_API_KEY=... \
+  -e ERROR_ORCHESTRATOR_REPO=<owner>/<repo> \
+  error-orchestrator-demo --idle --live-devin --seeded-bugs --live-devin-budget 2
+```
 
 ### Run setup, in the browser
 
@@ -237,6 +254,11 @@ state actionable rather than a counter:
 | The full state history and the Devin session links | |
 
 ### Options
+
+Every flag is optional, and each one is also a field in the Run setup panel.
+They apply the same whether they come from `python -m error_orchestrator.demo`,
+`docker run` (anything after the image name is passed straight through), or the
+browser.
 
 | Flag | Default | Purpose |
 | --- | --- | --- |
