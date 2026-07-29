@@ -90,3 +90,23 @@ async def test_an_answer_written_as_a_json_block_still_counts(
     )
 
     assert result.structured_output["reproduced"] is True
+
+
+@pytest.mark.asyncio
+async def test_a_patch_rendered_as_its_own_block_is_still_the_diff(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    answer = (
+        '```json\n{"reproduced": true, "diff": ""}\n```\n'
+        "Diff:\n```diff\n--- a/x.py\n+++ b/x.py\n```"
+    )
+    result = await _run(
+        monkeypatch,
+        {
+            "status_enum": "blocked",
+            "structured_output": None,
+            "messages": [{"message": answer}],
+        },
+    )
+
+    assert result.structured_output["diff"].startswith("--- a/x.py")

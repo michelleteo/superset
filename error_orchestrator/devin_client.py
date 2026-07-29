@@ -48,6 +48,9 @@ SESSION_URL = "https://app.devin.ai/sessions/{session_id}"
 #: Sessions reliably *write* the requested JSON, but do not always publish it
 #: as structured output, so the last fenced JSON block is read as a fallback.
 _JSON_BLOCK = re.compile(r"```(?:json)?\s*(\{.*?\})\s*```", re.DOTALL)
+#: A session often renders its patch as its own block and leaves the JSON's
+#: ``diff`` empty, which would otherwise read as "fixed nothing".
+_DIFF_BLOCK = re.compile(r"```diff\s*(.*?)```", re.DOTALL)
 
 
 def _reported_output(payload: Mapping[str, Any]) -> dict[str, Any]:
@@ -61,8 +64,13 @@ def _reported_output(payload: Mapping[str, Any]) -> dict[str, Any]:
             parsed = json.loads(match.group(1))
         except json.JSONDecodeError:
             continue
-        if isinstance(parsed, dict):
-            return parsed
+        if not isinstance(parsed, dict):
+            continue
+        if not parsed.get("diff"):
+            block = _DIFF_BLOCK.search(str(message.get("message") or ""))
+            if block is not None:
+                parsed["diff"] = block.group(1).strip()
+        return parsed
     return {}
 
 
