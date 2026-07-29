@@ -73,3 +73,20 @@ async def test_a_blocked_session_is_only_an_answer_once_it_has_output(
     )
 
     assert result.structured_output == {"reproduced": False}
+
+
+@pytest.mark.asyncio
+async def test_an_answer_written_as_a_json_block_still_counts(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    answer = '```json\n{"reproduced": true, "diff": "--- a\\n+++ b\\n"}\n```'
+    result = await _run(
+        monkeypatch,
+        {
+            "status_enum": "blocked",
+            "structured_output": None,
+            "messages": [{"message": "working"}, {"message": answer}],
+        },
+    )
+
+    assert result.structured_output["reproduced"] is True

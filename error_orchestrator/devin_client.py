@@ -25,7 +25,11 @@ by the orchestrator's lane semaphores, not here.
 from __future__ import annotations
 
 import asyncio
+
+# This package never imports Superset, so superset.utils.json is unavailable.
+import json  # noqa: TID251
 import logging
+import re
 from dataclasses import dataclass, field
 from typing import Any, Callable, Mapping, Protocol
 
@@ -41,6 +45,25 @@ _TERMINAL_STATUSES = frozenset({"stopped", "finished", "expired"})
 #: counts as an answer once the session has produced its structured output.
 _ANSWERED_STATUSES = frozenset({"blocked"})
 SESSION_URL = "https://app.devin.ai/sessions/{session_id}"
+#: Sessions reliably *write* the requested JSON, but do not always publish it
+#: as structured output, so the last fenced JSON block is read as a fallback.
+_JSON_BLOCK = re.compile(r"```(?:json)?\s*(\{.*?\})\s*```", re.DOTALL)
+
+
+def _reported_output(payload: Mapping[str, Any]) -> dict[str, Any]:
+    """The answer a session wrote into its last message, when it wrote one."""
+    messages = payload.get("messages") or []
+    for message in reversed(list(messages)):
+        match = _JSON_BLOCK.search(str(message.get("message") or ""))
+        if match is None:
+            continue
+        try:
+            parsed = json.loads(match.group(1))
+        except json.JSONDecodeError:
+            continue
+        if isinstance(parsed, dict):
+            return parsed
+    return {}
 
 
 class DevinError(RuntimeError):
@@ -137,7 +160,7 @@ class HttpDevinClient:
                     continue
                 payload = detail.json()
                 status = str(payload.get("status_enum") or payload.get("status") or "")
-                output = payload.get("structured_output") or {}
+                output = payload.get("structured_output") or _reported_output(payload)
                 answered = status in _ANSWERED_STATUSES and bool(output)
                 if status in _TERMINAL_STATUSES or answered:
                     return DevinSessionResult(
