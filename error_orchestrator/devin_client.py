@@ -36,7 +36,11 @@ logger = logging.getLogger(__name__)
 DEFAULT_API_BASE = "https://api.devin.ai/v1"
 DEFAULT_POLL_INTERVAL = 10.0
 DEFAULT_TIMEOUT = 60 * 60.0
-_TERMINAL_STATUSES = frozenset({"blocked", "stopped", "finished", "expired"})
+_TERMINAL_STATUSES = frozenset({"stopped", "finished", "expired"})
+#: ``blocked`` also covers a session pausing to ask a question, so it only
+#: counts as an answer once the session has produced its structured output.
+_ANSWERED_STATUSES = frozenset({"blocked"})
+SESSION_URL = "https://app.devin.ai/sessions/{session_id}"
 
 
 class DevinError(RuntimeError):
@@ -120,7 +124,7 @@ class HttpDevinClient:
                 )
             created = response.json()
             session_id = created["session_id"]
-            url = created.get("url", "")
+            url = created.get("url") or SESSION_URL.format(session_id=session_id)
             deadline = asyncio.get_running_loop().time() + self._timeout
             while True:
                 if asyncio.get_running_loop().time() > deadline:
@@ -133,12 +137,14 @@ class HttpDevinClient:
                     continue
                 payload = detail.json()
                 status = str(payload.get("status_enum") or payload.get("status") or "")
-                if status in _TERMINAL_STATUSES:
+                output = payload.get("structured_output") or {}
+                answered = status in _ANSWERED_STATUSES and bool(output)
+                if status in _TERMINAL_STATUSES or answered:
                     return DevinSessionResult(
                         session_id=session_id,
-                        url=payload.get("url", url),
+                        url=payload.get("url") or url,
                         status=status,
-                        structured_output=payload.get("structured_output") or {},
+                        structured_output=output,
                     )
 
 
