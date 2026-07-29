@@ -126,18 +126,23 @@ def create_app(
     extra_routes: Sequence[Route] = (),
     on_start: Sequence[Callable[[], None]] = (),
     on_stop: Sequence[Callable[[], Awaitable[None]]] = (),
+    endpoints: Endpoints | None = None,
+    autostart: bool = True,
 ) -> Starlette:
     """Build the Starlette app wired to a (not yet started) orchestrator.
 
     ``extra_routes`` lets an embedding process (the demo) mount its own
     surface; ``on_start``/``on_stop`` hook companion tasks into the same
-    lifespan so they die with the server.
+    lifespan so they die with the server. An embedder that may swap the
+    orchestrator at runtime passes its own ``endpoints`` (so it can re-point
+    them) and takes over start/stop with ``autostart=False``.
     """
-    endpoints = Endpoints(orchestrator)
+    surface = endpoints if endpoints is not None else Endpoints(orchestrator)
 
     @contextlib.asynccontextmanager
     async def lifespan(_: Starlette) -> AsyncIterator[None]:
-        orchestrator.start()
+        if autostart:
+            orchestrator.start()
         for start in on_start:
             start()
         try:
@@ -145,15 +150,16 @@ def create_app(
         finally:
             for stop in on_stop:
                 await stop()
-            await orchestrator.stop()
+            if autostart:
+                await orchestrator.stop()
 
     return Starlette(
         routes=[
-            Route("/webhook/errors", endpoints.receive_errors, methods=["POST"]),
-            Route("/healthz", endpoints.healthz, methods=["GET"]),
-            Route("/stats", endpoints.stats, methods=["GET"]),
-            Route("/pools", endpoints.list_pools, methods=["GET"]),
-            Route("/pools/{pool_id}", endpoints.get_pool, methods=["GET"]),
+            Route("/webhook/errors", surface.receive_errors, methods=["POST"]),
+            Route("/healthz", surface.healthz, methods=["GET"]),
+            Route("/stats", surface.stats, methods=["GET"]),
+            Route("/pools", surface.list_pools, methods=["GET"]),
+            Route("/pools/{pool_id}", surface.get_pool, methods=["GET"]),
             *extra_routes,
         ],
         lifespan=lifespan,

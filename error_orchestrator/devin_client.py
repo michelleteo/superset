@@ -25,7 +25,11 @@ by the orchestrator's lane semaphores, not here.
 from __future__ import annotations
 
 import asyncio
+
+# This package never imports Superset, so superset.utils.json is unavailable.
+import json  # noqa: TID251
 import logging
+import re
 from dataclasses import dataclass, field
 from typing import Any, Callable, Mapping, Protocol
 
@@ -36,7 +40,45 @@ logger = logging.getLogger(__name__)
 DEFAULT_API_BASE = "https://api.devin.ai/v1"
 DEFAULT_POLL_INTERVAL = 10.0
 DEFAULT_TIMEOUT = 60 * 60.0
-_TERMINAL_STATUSES = frozenset({"blocked", "stopped", "finished", "expired"})
+_TERMINAL_STATUSES = frozenset({"stopped", "finished", "expired"})
+#: ``blocked`` also covers a session pausing to ask a question, so it only
+#: counts as an answer once the session has produced its structured output.
+_ANSWERED_STATUSES = frozenset({"blocked"})
+SESSION_URL = "https://app.devin.ai/sessions/{session_id}"
+#: Sessions reliably *write* the requested JSON, but do not always publish it
+#: as structured output, so the last fenced JSON block is read as a fallback.
+_JSON_BLOCK = re.compile(r"```(?:json)?\s*(\{.*?\})\s*```", re.DOTALL)
+#: A session often renders its patch as its own block and leaves the JSON's
+#: ``diff`` empty, which would otherwise read as "fixed nothing".
+_DIFF_BLOCK = re.compile(r"```diff\s*(.*?)```", re.DOTALL)
+_PATCH_MARKERS = ("diff --git", "--- ", "@@")
+
+
+def _is_patch(value: object) -> bool:
+    """A patch, rather than a session describing where it put one."""
+    return isinstance(value, str) and any(m in value for m in _PATCH_MARKERS)
+
+
+def _reported_output(payload: Mapping[str, Any]) -> dict[str, Any]:
+    """The answer a session wrote into its last message, when it wrote one."""
+    messages = payload.get("messages") or []
+    for message in reversed(list(messages)):
+        match = _JSON_BLOCK.search(str(message.get("message") or ""))
+        if match is None:
+            continue
+        try:
+            parsed = json.loads(match.group(1))
+        except json.JSONDecodeError:
+            continue
+        if not isinstance(parsed, dict):
+            continue
+        if not _is_patch(parsed.get("diff")):
+            block = _DIFF_BLOCK.search(str(message.get("message") or ""))
+            # Prose about where the patch went is not a patch: an empty diff is
+            # a state the orchestrator handles, a fake one is not.
+            parsed["diff"] = block.group(1).strip() if block else ""
+        return parsed
+    return {}
 
 
 class DevinError(RuntimeError):
@@ -120,7 +162,11 @@ class HttpDevinClient:
                 )
             created = response.json()
             session_id = created["session_id"]
-            url = created.get("url", "")
+            # The page is keyed by the bare id, while the API returns it
+            # prefixed.
+            url = created.get("url") or SESSION_URL.format(
+                session_id=session_id.removeprefix("devin-")
+            )
             deadline = asyncio.get_running_loop().time() + self._timeout
             while True:
                 if asyncio.get_running_loop().time() > deadline:
@@ -133,12 +179,14 @@ class HttpDevinClient:
                     continue
                 payload = detail.json()
                 status = str(payload.get("status_enum") or payload.get("status") or "")
-                if status in _TERMINAL_STATUSES:
+                output = payload.get("structured_output") or _reported_output(payload)
+                answered = status in _ANSWERED_STATUSES and bool(output)
+                if status in _TERMINAL_STATUSES or answered:
                     return DevinSessionResult(
                         session_id=session_id,
-                        url=payload.get("url", url),
+                        url=payload.get("url") or url,
                         status=status,
-                        structured_output=payload.get("structured_output") or {},
+                        structured_output=output,
                     )
 
 
