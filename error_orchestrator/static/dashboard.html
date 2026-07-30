@@ -282,6 +282,7 @@ under the License.
       <span class="hint">0 = unlimited; the rest run simulated</span>
     </label>
     <div class="field">real sessions for
+      <span class="hint">which lanes may spend one, once <em>real Devin sessions</em> is on</span>
       <div class="stages">
         <label><input type="checkbox" class="stage" value="triage"> triage</label>
         <label><input type="checkbox" class="stage" value="remediate"> remediate</label>
@@ -781,7 +782,7 @@ function renderLiveSessions(live) {
     .join(', ');
   pill.textContent = running
     ? `real session running · ${running}`
-    : `real sessions spent ${live.spent}/${live.budget}`;
+    : `real sessions spent ${live.spent}${live.unlimited ? ' · no budget cap' : `/${live.budget}`}`;
   pill.classList.toggle('busy', live.in_flight.length > 0);
 }
 

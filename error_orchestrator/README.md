@@ -271,7 +271,7 @@ browser.
 | `--seed` | none | Reproducible stream |
 | `--live-devin` | off | Use the real Devin API |
 | `--live-devin-budget` | `3` | Real sessions to spend before falling back to simulated ones (`0` = no limit) |
-| `--live-devin-stages` | `remediate` | Which lanes may spend a real session |
+| `--live-devin-stages` | `remediate` | Which lanes may spend a real session, capped budget or not |
 | `--seeded-bugs` | off | Emit this repo's own reproducible defects instead of synthetic errors |
 | `--idle` | off | Boot without streaming, so the run starts from the UI |
 

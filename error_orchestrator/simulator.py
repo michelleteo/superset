@@ -851,7 +851,8 @@ class BudgetedDevinClient:
     Real sessions produce real diffs but take minutes and cost money, which is
     at odds with a dashboard that has to keep moving. This runs the first N
     pools through the real API — enough to show genuine Devin-authored diffs —
-    and simulates the rest so throughput stays visible.
+    and simulates the rest so throughput stays visible. A budget of ``0`` lifts
+    that cap, but the stage filter still applies.
     """
 
     def __init__(
@@ -859,6 +860,7 @@ class BudgetedDevinClient:
     ) -> None:
         self.live = live
         self.fallback = fallback
+        #: ``0`` means no cap on how many real sessions a run may spend.
         self.budget = budget
         #: Which lanes may use the real API; empty means all of them.
         self.stages = tuple(stages)
@@ -868,10 +870,14 @@ class BudgetedDevinClient:
         #: able to say that a slot is waiting on Devin rather than wedged.
         self.in_flight: dict[str, float] = {}
 
+    @property
+    def unlimited(self) -> bool:
+        return self.budget <= 0
+
     def _use_live(self, stage: str) -> bool:
         if self.stages and stage not in self.stages:
             return False
-        return self.spent < self.budget
+        return self.unlimited or self.spent < self.budget
 
     async def run_session(
         self,
@@ -888,7 +894,10 @@ class BudgetedDevinClient:
             )
         self.spent += 1
         logger.info(
-            "spending real Devin session %s/%s on %s", self.spent, self.budget, stage
+            "spending real Devin session %s/%s on %s",
+            self.spent,
+            "unlimited" if self.unlimited else self.budget,
+            stage,
         )
         key = f"{stage}:{self.spent}"
         self.in_flight[key] = time.time()
@@ -905,6 +914,8 @@ class BudgetedDevinClient:
         return {
             "spent": self.spent,
             "budget": self.budget,
+            "unlimited": self.unlimited,
+            "stages": list(self.stages),
             "in_flight": [
                 {"stage": key.split(":")[0], "elapsed": now - started}
                 for key, started in sorted(self.in_flight.items())
