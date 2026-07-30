@@ -95,6 +95,8 @@ class DemoRuntime:
             api_base=self.config.devin_api_base,
             poll_interval=self.config.devin_poll_interval,
             timeout=self.config.devin_session_timeout,
+            nudge_interval=self.config.devin_nudge_interval,
+            max_nudges=self.config.devin_max_nudges,
         )
         if settings.live_devin_budget <= 0:
             return live

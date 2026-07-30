@@ -84,8 +84,10 @@ Steps:
 4. Do NOT open a pull request or merge anything — a separate risk-check stage
    owns that decision. Report the diff instead.
 
-Return structured output. "diff" must contain the patch itself, inline, as
-`git diff` prints it — not an attachment, a file name or a description of it:
+Finish by replying with ONE fenced ```json block and nothing else — not prose,
+not a pointer to an earlier message. "diff" must contain the patch itself,
+inline, as `git diff` prints it — not an attachment, a file name or a
+description of it:
 {{
   "reproduced": true | false,
   "diff": "<unified diff of fix + test, empty when not reproduced>",
