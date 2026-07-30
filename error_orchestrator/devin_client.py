@@ -40,6 +40,18 @@ logger = logging.getLogger(__name__)
 DEFAULT_API_BASE = "https://api.devin.ai/v1"
 DEFAULT_POLL_INTERVAL = 10.0
 DEFAULT_TIMEOUT = 60 * 60.0
+#: A blocked session is waiting on us, so it is asked for its answer rather than
+#: polled until the timeout.
+DEFAULT_NUDGE_INTERVAL = 60.0
+DEFAULT_MAX_NUDGES = 2
+NUDGE_MESSAGE = (
+    "You are blocked and no machine-readable answer has reached the caller. "
+    "Reply with ONE fenced ```json block containing exactly the keys the "
+    "prompt asked for, and nothing else \u2014 no prose, no attachments, no "
+    'pointer to an earlier message. Put any patch inline in "diff" as '
+    "`git diff` prints it. If you could not do the work, say so in the same "
+    "JSON shape instead of asking a question."
+)
 _TERMINAL_STATUSES = frozenset({"stopped", "finished", "expired"})
 #: ``blocked`` also covers a session pausing to ask a question, so it only
 #: counts as an answer once the session has produced its structured output.
@@ -81,6 +93,33 @@ def _reported_output(payload: Mapping[str, Any]) -> dict[str, Any]:
     return {}
 
 
+@dataclass
+class _BlockedWatch:
+    """How long a session has been blocked with nothing machine-readable."""
+
+    interval: float
+    max_nudges: int
+    since: float | None = None
+    nudges: int = 0
+
+    def clear(self) -> None:
+        self.since = None
+
+    def due(self, now: float) -> bool:
+        """Whether the session has been blocked long enough to be asked again."""
+        if self.since is None:
+            self.since = now
+            return False
+        if now - self.since < self.interval:
+            return False
+        self.since = now
+        return True
+
+    @property
+    def exhausted(self) -> bool:
+        return self.nudges >= self.max_nudges
+
+
 class DevinError(RuntimeError):
     """Raised when a Devin session cannot be created or does not complete."""
 
@@ -120,6 +159,8 @@ class HttpDevinClient:
         poll_interval: float = DEFAULT_POLL_INTERVAL,
         timeout: float = DEFAULT_TIMEOUT,
         playbook_id: str | None = None,
+        nudge_interval: float = DEFAULT_NUDGE_INTERVAL,
+        max_nudges: int = DEFAULT_MAX_NUDGES,
     ) -> None:
         if not api_key:
             raise DevinError("DEVIN_API_KEY is required for HttpDevinClient")
@@ -128,6 +169,8 @@ class HttpDevinClient:
         self._poll_interval = poll_interval
         self._timeout = timeout
         self._playbook_id = playbook_id
+        self._nudge_interval = nudge_interval
+        self._max_nudges = max_nudges
 
     @property
     def _headers(self) -> dict[str, str]:
@@ -144,32 +187,15 @@ class HttpDevinClient:
         tags: list[str] | None = None,
         idempotent: bool = True,
     ) -> DevinSessionResult:
-        body: dict[str, Any] = {"prompt": prompt, "idempotent": idempotent}
-        if title:
-            body["title"] = title
-        if tags:
-            body["tags"] = tags
-        if self._playbook_id:
-            body["playbook_id"] = self._playbook_id
-
         async with httpx.AsyncClient(timeout=30.0) as client:
-            response = await client.post(
-                f"{self._api_base}/sessions", json=body, headers=self._headers
+            session_id, url = await self._create(
+                client, prompt, title=title, tags=tags, idempotent=idempotent
             )
-            if response.status_code >= 400:
-                raise DevinError(
-                    f"session creation failed ({response.status_code}): {response.text}"
-                )
-            created = response.json()
-            session_id = created["session_id"]
-            # The page is keyed by the bare id, while the API returns it
-            # prefixed.
-            url = created.get("url") or SESSION_URL.format(
-                session_id=session_id.removeprefix("devin-")
-            )
-            deadline = asyncio.get_running_loop().time() + self._timeout
+            loop = asyncio.get_running_loop()
+            deadline = loop.time() + self._timeout
+            watch = _BlockedWatch(self._nudge_interval, self._max_nudges)
             while True:
-                if asyncio.get_running_loop().time() > deadline:
+                if loop.time() > deadline:
                     raise DevinError(f"session {session_id} timed out")
                 await asyncio.sleep(self._poll_interval)
                 detail = await client.get(
@@ -188,6 +214,74 @@ class HttpDevinClient:
                         status=status,
                         structured_output=output,
                     )
+                if status not in _ANSWERED_STATUSES:
+                    watch.clear()
+                    continue
+                # Blocked with nothing to read: the session is waiting on an
+                # answer, or wrote its result as prose. Either way it will not
+                # move again on its own, so ask, then give the lane its worker
+                # back rather than holding it for the whole timeout.
+                if not watch.due(loop.time()):
+                    continue
+                if watch.exhausted:
+                    raise DevinError(
+                        f"session {payload.get('url') or url} stayed blocked "
+                        f"without a machine-readable answer after "
+                        f"{watch.nudges} nudge(s)"
+                    )
+                watch.nudges += 1
+                await self._nudge(client, session_id, watch.nudges)
+
+    async def _create(
+        self,
+        client: httpx.AsyncClient,
+        prompt: str,
+        *,
+        title: str | None,
+        tags: list[str] | None,
+        idempotent: bool,
+    ) -> tuple[str, str]:
+        """Create the session and return its id plus the page to link to."""
+        body: dict[str, Any] = {"prompt": prompt, "idempotent": idempotent}
+        if title:
+            body["title"] = title
+        if tags:
+            body["tags"] = tags
+        if self._playbook_id:
+            body["playbook_id"] = self._playbook_id
+        response = await client.post(
+            f"{self._api_base}/sessions", json=body, headers=self._headers
+        )
+        if response.status_code >= 400:
+            raise DevinError(
+                f"session creation failed ({response.status_code}): {response.text}"
+            )
+        created = response.json()
+        session_id = str(created["session_id"])
+        # The page is keyed by the bare id, while the API returns it prefixed.
+        url = created.get("url") or SESSION_URL.format(
+            session_id=session_id.removeprefix("devin-")
+        )
+        return session_id, url
+
+    async def _nudge(
+        self, client: httpx.AsyncClient, session_id: str, attempt: int
+    ) -> None:
+        """Ask a blocked session for its answer in the shape the caller reads."""
+        logger.info("nudging blocked session %s (attempt %s)", session_id, attempt)
+        try:
+            response = await client.post(
+                f"{self._api_base}/session/{session_id}/message",
+                json={"message": NUDGE_MESSAGE},
+                headers=self._headers,
+            )
+        except httpx.HTTPError:
+            logger.warning("could not nudge session %s", session_id, exc_info=True)
+            return
+        if response.status_code >= 400:
+            logger.warning(
+                "nudge for session %s rejected (%s)", session_id, response.status_code
+            )
 
 
 @dataclass

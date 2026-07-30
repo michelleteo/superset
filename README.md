@@ -193,12 +193,13 @@ that has to keep moving, so only the first `--live-devin-budget` remediations
 not a stream.
 
 A real session holds its remediation worker for as long as it runs, and it only
-returns to the board once it posts its answer as a fenced JSON block (see
-[`devin_client.py`](error_orchestrator/devin_client.py)). A session that fixes
-the bug but answers in prose leaves its pool sitting in `reproducing` until the
-one-hour poll timeout; opening the session and asking it for the JSON block
-unblocks it. Budget accordingly if you are demoing to an audience: keep at least
-one simulated lane moving, or drive the live run separately from the board.
+returns an answer the orchestrator can act on once it posts a fenced JSON block.
+A session that fixes the bug but reports it in prose is asked for the block and,
+if it still says nothing machine-readable, is abandoned within a couple of
+minutes so the worker goes back to the lane — the pool then reads
+`could_not_reproduce`, with the reason and the session's URL on its ticket so you
+can go and read what it actually did (see
+[`devin_client.py`](error_orchestrator/devin_client.py)).
 
 The API key is **never** a setting: it is read from the server's environment
 only, and the panel shows only whether one is present. Without a key the *real

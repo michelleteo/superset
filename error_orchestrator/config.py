@@ -48,6 +48,11 @@ class OrchestratorConfig:
     devin_api_base: str = "https://api.devin.ai/v1"
     devin_poll_interval: float = 10.0
     devin_session_timeout: float = 60 * 60.0
+    #: How long a session may sit blocked with nothing machine-readable before it
+    #: is asked for its answer, and how many times it is asked before the lane
+    #: takes its worker back.
+    devin_nudge_interval: float = 60.0
+    devin_max_nudges: int = 2
 
     host: str = "0.0.0.0"  # noqa: S104
     port: int = 8088
@@ -104,6 +109,8 @@ class OrchestratorConfig:
             or "https://api.devin.ai/v1",
             devin_poll_interval=_float("DEVIN_POLL_INTERVAL", 10.0),
             devin_session_timeout=_float("DEVIN_SESSION_TIMEOUT", 3600.0),
+            devin_nudge_interval=_float("DEVIN_NUDGE_INTERVAL", 60.0),
+            devin_max_nudges=_int("DEVIN_MAX_NUDGES", 2),
             host=_get("HOST", "0.0.0.0") or "0.0.0.0",  # noqa: S104
             port=_int("PORT", 8088),
             webhook_token=_get("WEBHOOK_TOKEN"),

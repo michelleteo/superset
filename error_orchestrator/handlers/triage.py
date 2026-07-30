@@ -104,7 +104,7 @@ Existing categories:
 Read the relevant code to check whether the failure originates from the same
 root cause as a candidate. Do not guess from the message text alone.
 
-Return structured output:
+Finish by replying with ONE fenced ```json block and nothing else:
 {{
   "action": "merge" | "new_category",
   "pool_id": "<required when action is merge>",

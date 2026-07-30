@@ -24,30 +24,47 @@ from typing import Any
 import httpx
 import pytest
 
-from error_orchestrator.devin_client import HttpDevinClient
+from error_orchestrator.devin_client import DevinError, HttpDevinClient
 
 
-def _transport(*polls: dict[str, Any]) -> httpx.MockTransport:
-    """Serve one session creation followed by ``polls`` session details."""
+def _transport(
+    *polls: dict[str, Any], messages: list[str] | None = None
+) -> httpx.MockTransport:
+    """Serve one session creation followed by ``polls`` session details.
+
+    The last poll repeats once exhausted, so a test can keep a session blocked
+    for as long as the client is willing to wait. Nudges sent to the session are
+    collected in ``messages``.
+    """
     remaining = list(polls)
 
     def handle(request: httpx.Request) -> httpx.Response:
         if request.method == "POST":
+            if request.url.path.endswith("/message"):
+                if messages is not None:
+                    messages.append(request.read().decode())
+                return httpx.Response(200, json={})
             return httpx.Response(200, json={"session_id": "devin-abc", "url": None})
-        return httpx.Response(200, json=remaining.pop(0))
+        poll = remaining.pop(0) if len(remaining) > 1 else remaining[0]
+        return httpx.Response(200, json=poll)
 
     return httpx.MockTransport(handle)
 
 
-async def _run(monkeypatch: pytest.MonkeyPatch, *polls: dict[str, Any]) -> Any:
-    transport = _transport(*polls)
+async def _run(
+    monkeypatch: pytest.MonkeyPatch,
+    *polls: dict[str, Any],
+    messages: list[str] | None = None,
+    **client_kwargs: Any,
+) -> Any:
+    transport = _transport(*polls, messages=messages)
     original = httpx.AsyncClient
 
     def client(**kwargs: Any) -> httpx.AsyncClient:
         return original(transport=transport, **kwargs)
 
     monkeypatch.setattr(httpx, "AsyncClient", client)
-    devin = HttpDevinClient(api_key="k", poll_interval=0.0)
+    devin = HttpDevinClient(api_key="k", poll_interval=0.0, **client_kwargs)
     return await devin.run_session("prompt")
 
 
@@ -73,6 +90,50 @@ async def test_a_blocked_session_is_only_an_answer_once_it_has_output(
     )
 
     assert result.structured_output == {"reproduced": False}
+
+
+@pytest.mark.asyncio
+async def test_a_session_blocked_with_nothing_to_read_is_asked_for_its_answer(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    nudges: list[str] = []
+    answer = '```json\n{"reproduced": false}\n```'
+
+    result = await _run(
+        monkeypatch,
+        {"status_enum": "blocked", "structured_output": None},
+        {"status_enum": "blocked", "structured_output": None},
+        {
+            "status_enum": "blocked",
+            "structured_output": None,
+            "messages": [{"message": answer}],
+        },
+        messages=nudges,
+        nudge_interval=0.0,
+    )
+
+    assert len(nudges) == 1
+    assert "json" in nudges[0]
+    assert result.structured_output == {"reproduced": False, "diff": ""}
+
+
+@pytest.mark.asyncio
+async def test_a_session_that_stays_blocked_fails_instead_of_holding_the_worker(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    nudges: list[str] = []
+
+    with pytest.raises(DevinError, match="stayed blocked"):
+        await _run(
+            monkeypatch,
+            {"status_enum": "blocked", "structured_output": None},
+            messages=nudges,
+            nudge_interval=0.0,
+            max_nudges=2,
+            timeout=30.0,
+        )
+
+    assert len(nudges) == 2
 
 
 @pytest.mark.asyncio

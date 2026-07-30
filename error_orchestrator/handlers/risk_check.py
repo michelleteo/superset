@@ -89,7 +89,7 @@ test meaningful (does it fail without the fix?), and does it introduce
 regressions, behaviour changes or security issues? When in doubt, do not
 approve.
 
-Return structured output:
+Finish by replying with ONE fenced ```json block and nothing else:
 {{
   "approved": true | false,
   "confidence": <float 0-1>,
