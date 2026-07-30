@@ -110,8 +110,11 @@ The board has four regions:
 ### Drive the stream
 
 The toolbar injects a named scenario, bursts five at once, changes the error
-rate, or pauses the stream. Traffic is deliberately mixed so every path through
-the state machine keeps firing:
+rate, or pauses the stream. The dropdown lists scenario names while board rows
+are titled from the traceback, so an injection usually shows up as a climbing
+occurrence count on a differently named row (or merged into a category triage
+chose) rather than as a new row. Traffic is deliberately mixed so every path
+through the state machine keeps firing:
 
 | Traffic | What you should see |
 | --- | --- |
@@ -143,10 +146,12 @@ session speed, duplicate and variant rate, worker counts per lane, seed,
 reviewers, auto-review interval, real Devin sessions, seeded bugs, and the real
 session budget and stages.
 
-- **Start run** applies the panel and starts streaming. On a running board it
-  reads *Restart with these settings*: worker counts, session speed and the
-  Devin client cannot change underneath a live orchestrator, so the run is
-  rebuilt and anything already on the board is dropped.
+- **Start run** applies the panel and starts streaming. While the stream is
+  running it reads *Restart with these settings*: worker counts, session speed
+  and the Devin client cannot change underneath a live orchestrator, so the run is
+  rebuilt and anything already on the board is dropped. Pausing flips the label
+  back to *Start run* without emptying the board, but pressing it still rebuilds
+  the run — use **Reset** if all you want is a clean board.
 - **Reset** stops the stream and returns to an empty board with the settings the
   process started with — the demo's "take it from the top".
 
@@ -180,11 +185,20 @@ docker run --rm -p 8099:8099 \
   --live-devin --seeded-bugs --rate 0.2 --live-devin-budget 2
 ```
 
-Real sessions take minutes, which is at odds with a dashboard that has to keep
-moving, so only the first `--live-devin-budget` remediations (default 3, `0` =
-no limit) go to the real API and the rest are simulated; `--live-devin-stages`
-chooses which lanes may spend a real session (default `remediate`). Keep the
-rate low — you are watching a handful of real sessions, not a stream.
+Real sessions take minutes to tens of minutes, which is at odds with a dashboard
+that has to keep moving, so only the first `--live-devin-budget` remediations
+(default 3, `0` = no limit) go to the real API and the rest are simulated;
+`--live-devin-stages` chooses which lanes may spend a real session (default
+`remediate`). Keep the rate low — you are watching a handful of real sessions,
+not a stream.
+
+A real session holds its remediation worker for as long as it runs, and it only
+returns to the board once it posts its answer as a fenced JSON block (see
+[`devin_client.py`](error_orchestrator/devin_client.py)). A session that fixes
+the bug but answers in prose leaves its pool sitting in `reproducing` until the
+one-hour poll timeout; opening the session and asking it for the JSON block
+unblocks it. Budget accordingly if you are demoing to an audience: keep at least
+one simulated lane moving, or drive the live run separately from the board.
 
 The API key is **never** a setting: it is read from the server's environment
 only, and the panel shows only whether one is present. Without a key the *real
