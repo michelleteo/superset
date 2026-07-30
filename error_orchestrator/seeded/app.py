@@ -25,8 +25,8 @@ a genuine defect, raises a genuine traceback through this file, and can be
 reproduced with a one-line command (see :mod:`error_orchestrator.seeded.bugs`).
 
 The bugs are all of the "missing guard" family that these code paths really do
-suffer from: an optional attribute assumed present, a form key assumed set, an
-empty string handed to a parser, and bytes assumed to be UTF-8.
+suffer from: an optional attribute assumed present, a form key assumed set, and
+bytes assumed to be UTF-8.
 """
 
 from __future__ import annotations
@@ -62,9 +62,15 @@ def get_time_filter_status(form_data: Mapping[str, Any]) -> dict[str, Any]:
     return {"column": temporal_column, "applied": True}
 
 
-def parse_human_datetime(human_readable: str) -> datetime:
-    """Parse the handful of date shapes the explore UI can produce."""
-    return datetime.strptime(human_readable, "%Y-%m-%d")
+def parse_human_datetime(human_readable: str | None) -> datetime | None:
+    """Parse the handful of date shapes the explore UI can produce.
+
+    An unset date range boundary arrives as an empty string and means "no
+    boundary", so it parses to ``None`` rather than raising.
+    """
+    if human_readable is None or not human_readable.strip():
+        return None
+    return datetime.strptime(human_readable.strip(), "%Y-%m-%d")
 
 
 def rows_to_csv(rows: Sequence[Sequence[bytes]]) -> str:

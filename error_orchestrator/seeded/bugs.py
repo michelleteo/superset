@@ -71,13 +71,6 @@ SEEDED_BUGS: tuple[SeededBug, ...] = (
         trigger=lambda: app.get_time_filter_status({"viz_type": "table"}),
     ),
     SeededBug(
-        key="seeded_date_parser",
-        title="ValueError: unparseable human readable date",
-        message="Could not parse the date range the explore UI submitted",
-        logger="error_orchestrator.seeded.app.parse_human_datetime",
-        trigger=lambda: app.parse_human_datetime(""),
-    ),
-    SeededBug(
         key="seeded_csv_encoding",
         title="UnicodeDecodeError while rendering results as CSV",
         message="CSV export failed on a latin-1 encoded result cell",
