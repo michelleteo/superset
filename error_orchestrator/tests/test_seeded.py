@@ -92,5 +92,25 @@ def test_a_real_session_in_flight_is_visible_to_the_dashboard() -> None:
     assert live == {
         "spent": 0,
         "budget": 2,
+        "unlimited": False,
+        "stages": ["remediate"],
         "in_flight": [{"stage": "remediate", "elapsed": pytest.approx(0, abs=1)}],
     }
+
+
+def test_an_unlimited_budget_still_honours_the_selected_stages() -> None:
+    runtime = DemoRuntime(
+        OrchestratorConfig(devin_api_key="k"),
+        DemoSettings(
+            rate=0.1,
+            live_devin=True,
+            live_devin_budget=0,
+            live_devin_stages=("remediate",),
+        ),
+        autostart=False,
+    )
+    devin = runtime.orchestrator.devin
+
+    assert isinstance(devin, BudgetedDevinClient)
+    assert devin._use_live("remediate") is True
+    assert devin._use_live("triage") is False

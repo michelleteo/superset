@@ -77,6 +77,15 @@ def test_settings_that_would_break_a_run_are_rejected(
         DemoSettings().merged(payload)
 
 
+def test_clearing_every_stage_is_fine_while_real_sessions_are_off() -> None:
+    updated = DemoSettings().merged({"live_devin_stages": [], "live_devin": False})
+
+    assert updated.live_devin_stages == ()
+
+    with pytest.raises(SettingsError, match="at least one stage"):
+        updated.merged({"live_devin": True})
+
+
 def test_settings_never_carry_the_devin_api_key() -> None:
     assert "devin_api_key" not in DemoSettings().as_dict()
 

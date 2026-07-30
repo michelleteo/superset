@@ -98,10 +98,9 @@ class DemoRuntime:
             nudge_interval=self.config.devin_nudge_interval,
             max_nudges=self.config.devin_max_nudges,
         )
-        if settings.live_devin_budget <= 0:
-            return live
         # Real sessions take minutes; the budget keeps the board moving while
-        # still putting genuinely Devin-authored diffs on screen.
+        # still putting genuinely Devin-authored diffs on screen, and the stage
+        # selection holds even when the budget is unlimited.
         return BudgetedDevinClient(
             live,
             simulated,

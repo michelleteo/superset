@@ -64,7 +64,10 @@ def _flag(payload: Mapping[str, Any], key: str, current: bool) -> bool:
 
 
 def _names(
-    payload: Mapping[str, Any], key: str, current: tuple[str, ...]
+    payload: Mapping[str, Any],
+    key: str,
+    current: tuple[str, ...],
+    allow_empty: bool = False,
 ) -> tuple[str, ...]:
     if key not in payload or payload[key] is None:
         return current
@@ -73,7 +76,7 @@ def _names(
     if not isinstance(values, Sequence) or isinstance(values, (bytes, bytearray)):
         raise SettingsError(f"{key} must be a list of names")
     names = tuple(str(value).strip() for value in values if str(value).strip())
-    if not names:
+    if not names and not allow_empty:
         raise SettingsError(f"{key} must not be empty")
     return names
 
@@ -175,8 +178,13 @@ class DemoSettings:
             live_devin_budget=_whole(
                 payload, "live_devin_budget", self.live_devin_budget
             ),
+            # An empty stage selection is only a problem for a live run, and
+            # ``_validate_devin`` is the one that says so.
             live_devin_stages=_names(
-                payload, "live_devin_stages", self.live_devin_stages
+                payload,
+                "live_devin_stages",
+                self.live_devin_stages,
+                allow_empty=True,
             ),
             seeded_bugs=_flag(payload, "seeded_bugs", self.seeded_bugs),
         )

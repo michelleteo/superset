@@ -189,8 +189,8 @@ Real sessions take minutes to tens of minutes, which is at odds with a dashboard
 that has to keep moving, so only the first `--live-devin-budget` remediations
 (default 3, `0` = no limit) go to the real API and the rest are simulated;
 `--live-devin-stages` chooses which lanes may spend a real session (default
-`remediate`). Keep the rate low — you are watching a handful of real sessions,
-not a stream.
+`remediate`) and applies whether or not the budget is capped. Keep the rate low
+— you are watching a handful of real sessions, not a stream.
 
 A real session holds its remediation worker for as long as it runs, and it only
 returns an answer the orchestrator can act on once it posts a fenced JSON block.
