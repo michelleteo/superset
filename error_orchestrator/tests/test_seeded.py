@@ -58,6 +58,15 @@ def test_superset_defects_report_frames_inside_superset_itself() -> None:
     assert scenario.exception.startswith("AttributeError")
 
 
+def test_no_scenario_is_filed_against_python_internals() -> None:
+    for scenario in seeded_scenarios():
+        assert all(
+            frame.file.startswith(("superset/", "error_orchestrator/"))
+            for frame in scenario.frames
+        ), scenario.key
+        assert scenario.frames, scenario.key
+
+
 def test_seeded_mode_swaps_the_synthetic_catalog_for_the_real_one() -> None:
     runtime = DemoRuntime(
         OrchestratorConfig(),

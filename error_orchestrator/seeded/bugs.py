@@ -122,11 +122,22 @@ def capture(bug: SeededBug) -> BaseException:
 
 
 def _relative(filename: str) -> str:
-    path = Path(filename).resolve()
+    return str(Path(filename).resolve().relative_to(REPO_ROOT))
+
+
+def _is_repository_code(filename: str) -> bool:
+    """Frames from the standard library, site-packages or ``<frozen ...>`` are noise.
+
+    An exception can surface anywhere below the defect — ``import_module`` raises
+    ``ValueError`` from inside CPython — but the report has to name a file in this
+    repository, since that is where a reader (or a session) has to go.
+    """
+    path = Path(filename)
     return (
-        str(path.relative_to(REPO_ROOT))
-        if path.is_relative_to(REPO_ROOT)
-        else str(path)
+        path.is_absolute()
+        and path.is_file()
+        and path.resolve().is_relative_to(REPO_ROOT)
+        and path.name not in _HARNESS_FILES
     )
 
 
@@ -140,7 +151,7 @@ def _frames(error: BaseException) -> tuple[Frame, ...]:
             code=frame.line or "",
         )
         for frame in traceback.extract_tb(error.__traceback__)
-        if Path(frame.filename).name not in _HARNESS_FILES
+        if _is_repository_code(frame.filename)
     )
 
 
