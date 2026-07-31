@@ -159,6 +159,11 @@ def scenario_for(bug: SeededBug) -> ErrorScenario:
     """A simulator scenario carrying the bug's real frames and exception."""
     error = capture(bug)
     frames = _frames(error)
+    if not frames:
+        raise RuntimeError(
+            f"seeded bug {bug.key} failed outside the repository "
+            f"({error!r}) — the source files it needs are missing"
+        )
     last = frames[-1]
     exception = "".join(traceback.format_exception_only(type(error), error)).strip()
     return ErrorScenario(

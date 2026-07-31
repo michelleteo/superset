@@ -51,7 +51,11 @@ def load_superset_module(relative_path: str) -> ModuleType:
         raise ImportError(f"cannot load {relative_path}")
     module = importlib.util.module_from_spec(spec)
     sys.modules[name] = module
-    spec.loader.exec_module(module)
+    try:
+        spec.loader.exec_module(module)
+    except BaseException:
+        del sys.modules[name]
+        raise
     return module
 
 
