@@ -186,13 +186,49 @@ reaches the remediation prompt and the ticket:
 python -m error_orchestrator.seeded.reproduce seeded_datasource_none  # exit 1 until fixed
 ```
 
-```bash
-docker run --rm -p 8099:8099 \
-  -e DEVIN_API_KEY \
-  -e ERROR_ORCHESTRATOR_REPO=michelleteo/superset_demo \
-  error-orchestrator-demo \
-  --live-devin --seeded-bugs --rate 0.2 --live-devin-budget 2
-```
+#### Starting the container with real sessions
+
+1. Put a key ([app.devin.ai/settings/api-keys](https://app.devin.ai/settings/api-keys))
+   in the shell you start the container from. It is read from the environment
+   only, never typed into the UI:
+
+   ```bash
+   export DEVIN_API_KEY=your-key-here
+   ```
+
+2. Start it. With compose — the key is passed through and
+   `ERROR_ORCHESTRATOR_REPO` already points at this fork, so only the flags
+   change:
+
+   ```bash
+   docker compose -f error_orchestrator/docker-compose.yml run --rm --service-ports demo \
+     --live-devin --seeded-bugs --rate 0.2 --live-devin-budget 2
+   ```
+
+   Or with `docker run`, naming the repo sessions should clone:
+
+   ```bash
+   docker build -f error_orchestrator/Dockerfile -t error-orchestrator-demo .
+   docker run --rm -p 8099:8099 \
+     -e DEVIN_API_KEY \
+     -e ERROR_ORCHESTRATOR_REPO=michelleteo/superset_demo \
+     error-orchestrator-demo \
+     --live-devin --seeded-bugs --rate 0.2 --live-devin-budget 2
+   ```
+
+   (`docker compose up` uses the file's own `command:`, which is the simulated
+   run — use `run --service-ports` as above to pass live flags, or edit
+   `command:` in the compose file.)
+
+3. Open <http://localhost:8099/>. *Run setup* reads
+   `real Devin ready · michelleteo/superset_demo` (rather than
+   `no DEVIN_API_KEY — simulated sessions only`) and the *real Devin sessions*
+   checkbox is enabled, so live mode can also be turned on and off from the
+   browser instead of restarting the container.
+
+4. Wait for a pool to reach `remediating` — real sessions take minutes to tens
+   of minutes — then click it. The ticket carries the session link, and the diff
+   once the session answers.
 
 Real sessions take minutes to tens of minutes, which is at odds with a dashboard
 that has to keep moving, so only the first `--live-devin-budget` remediations
