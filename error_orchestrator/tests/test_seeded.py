@@ -48,6 +48,16 @@ def test_scenarios_carry_the_frames_the_code_actually_produced() -> None:
     assert "python -m error_orchestrator.seeded.reproduce" in scenario.message
 
 
+def test_superset_defects_report_frames_inside_superset_itself() -> None:
+    scenario = next(
+        s for s in seeded_scenarios() if s.key == "superset_country_symbol_none"
+    )
+
+    assert scenario.frames[0].file == "superset/examples/countries.py"
+    assert scenario.frames[0].func == "get"
+    assert scenario.exception.startswith("AttributeError")
+
+
 def test_seeded_mode_swaps_the_synthetic_catalog_for_the_real_one() -> None:
     runtime = DemoRuntime(
         OrchestratorConfig(),

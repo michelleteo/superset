@@ -30,18 +30,20 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 
-from error_orchestrator.seeded import app
+from error_orchestrator.seeded import app, superset_app
 from error_orchestrator.simulator import ErrorScenario, Frame
 
 #: How a human (or a Devin session) makes the bug happen on a clean clone.
 REPRO = "python -m error_orchestrator.seeded.reproduce {key}"
 #: Frames are reported relative to this, the way a real logger would.
 REPO_ROOT = Path(__file__).resolve().parents[2]
+#: Files that only call the defect; their frames are not part of the report.
+_HARNESS_FILES = frozenset({Path(__file__).name, "superset_app.py"})
 
 
 @dataclass(frozen=True)
 class SeededBug:
-    """A real defect in :mod:`error_orchestrator.seeded.app`."""
+    """A real defect, in Superset itself or in :mod:`.seeded.app`."""
 
     key: str
     title: str
@@ -84,6 +86,27 @@ SEEDED_BUGS: tuple[SeededBug, ...] = (
         logger="error_orchestrator.seeded.app.rows_to_csv",
         trigger=lambda: app.rows_to_csv([[b"ok", b"caf\xe9"]]),
     ),
+    SeededBug(
+        key="superset_country_symbol_none",
+        title="AttributeError: 'NoneType' object has no attribute 'lower'",
+        message="Country lookup failed for a chart whose country column is unset",
+        logger="superset.examples.countries.get",
+        trigger=superset_app.country_lookup_without_symbol,
+    ),
+    SeededBug(
+        key="superset_country_unknown_field",
+        title="KeyError: 'iso3'",
+        message="Country lookup failed for a code standard that is not indexed",
+        logger="superset.examples.countries.get",
+        trigger=superset_app.country_lookup_unknown_field,
+    ),
+    SeededBug(
+        key="superset_class_name_no_module",
+        title="ValueError: Empty module name",
+        message="Config loading failed on a class name with no module path",
+        logger="superset.utils.class_utils.load_class_from_name",
+        trigger=superset_app.class_name_without_module,
+    ),
 )
 
 SEEDED_BUGS_BY_KEY = {bug.key: bug for bug in SEEDED_BUGS}
@@ -117,7 +140,7 @@ def _frames(error: BaseException) -> tuple[Frame, ...]:
             code=frame.line or "",
         )
         for frame in traceback.extract_tb(error.__traceback__)
-        if Path(frame.filename).name != Path(__file__).name
+        if Path(frame.filename).name not in _HARNESS_FILES
     )
 
 

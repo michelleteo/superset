@@ -25,6 +25,12 @@ errors off a webhook, groups them into categories, and drives each category
 through triage → remediation → risk check using Devin sessions, ending in an
 auto-merge or a ticket assigned to a human.
 
+This repository is a fork of [Apache Superset](https://github.com/apache/superset)
+with the solution living in the same tree: the Superset source is untouched
+apart from the errors being remediated, and the orchestrator sits beside it in
+`error_orchestrator/`. The errors selected to drive the workflow, and what
+remediation produced for each, are in [`ISSUES.md`](ISSUES.md).
+
 This README is about running the demo of that workflow. For the orchestrator's
 design (fingerprinting, the priority heap, lane capacity, the risk registry) see
 [`error_orchestrator/README.md`](error_orchestrator/README.md). For Superset
@@ -168,10 +174,13 @@ needs no credentials and spends nothing.
 `--live-devin` swaps in the real API, so remediation returns a diff Devin
 actually wrote against the repo. Pair it with `--seeded-bugs`: the default
 traffic is synthetic, so a real session clones the repo, cannot find the
-traceback and correctly reports `could_not_reproduce`. Seeded bugs are genuine
-defects in [`error_orchestrator/seeded/app.py`](error_orchestrator/seeded/app.py)
-whose tracebacks are captured by *running* them, each carrying a one-line repro
-command that reaches the remediation prompt and the ticket:
+traceback and correctly reports `could_not_reproduce`. Seeded bugs are the
+genuine defects listed in [`ISSUES.md`](ISSUES.md) — some in Superset's own
+source (`superset/examples/countries.py`, `superset/utils/class_utils.py`), the
+rest in [`error_orchestrator/seeded/app.py`](error_orchestrator/seeded/app.py)
+for chart paths that cannot run without booting Superset. Their tracebacks are
+captured by *running* them, and each carries a one-line repro command that
+reaches the remediation prompt and the ticket:
 
 ```bash
 python -m error_orchestrator.seeded.reproduce seeded_datasource_none  # exit 1 until fixed
