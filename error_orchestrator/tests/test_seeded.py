@@ -48,6 +48,25 @@ def test_scenarios_carry_the_frames_the_code_actually_produced() -> None:
     assert "python -m error_orchestrator.seeded.reproduce" in scenario.message
 
 
+def test_superset_defects_report_frames_inside_superset_itself() -> None:
+    scenario = next(
+        s for s in seeded_scenarios() if s.key == "superset_country_symbol_none"
+    )
+
+    assert scenario.frames[0].file == "superset/examples/countries.py"
+    assert scenario.frames[0].func == "get"
+    assert scenario.exception.startswith("AttributeError")
+
+
+def test_no_scenario_is_filed_against_python_internals() -> None:
+    for scenario in seeded_scenarios():
+        assert all(
+            frame.file.startswith(("superset/", "error_orchestrator/"))
+            for frame in scenario.frames
+        ), scenario.key
+        assert scenario.frames, scenario.key
+
+
 def test_seeded_mode_swaps_the_synthetic_catalog_for_the_real_one() -> None:
     runtime = DemoRuntime(
         OrchestratorConfig(),
@@ -114,3 +133,9 @@ def test_an_unlimited_budget_still_honours_the_selected_stages() -> None:
     assert isinstance(devin, BudgetedDevinClient)
     assert devin._use_live("remediate") is True
     assert devin._use_live("triage") is False
+
+
+def test_simulated_remediation_patches_the_file_the_bug_lives_in() -> None:
+    for scenario in seeded_scenarios():
+        assert scenario.diff, scenario.key
+        assert scenario.frames[0].file in scenario.diff, scenario.key

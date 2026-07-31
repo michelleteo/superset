@@ -32,6 +32,12 @@ RUN pip install --no-cache-dir -r /app/error_orchestrator/requirements.txt
 
 COPY error_orchestrator /app/error_orchestrator
 
+# The seeded bugs are defects in this fork's own Superset source, loaded off
+# disk by path (see error_orchestrator/seeded/superset_app.py), so the files
+# holding them have to travel with the image.
+COPY superset/examples/countries.py /app/superset/examples/countries.py
+COPY superset/utils/class_utils.py /app/superset/utils/class_utils.py
+
 RUN useradd --create-home --uid 1000 demo && chown -R demo /app
 USER demo
 

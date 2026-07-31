@@ -24,10 +24,11 @@ services:
     ports:
       - "8099:8099"
     environment:
-      ERROR_ORCHESTRATOR_REPO: michelleteo/superset
+      ERROR_ORCHESTRATOR_REPO: michelleteo/superset_demo
       ERROR_ORCHESTRATOR_TRIAGE_WORKERS: "4"
       ERROR_ORCHESTRATOR_REMEDIATION_WORKERS: "3"
       ERROR_ORCHESTRATOR_RISK_CHECK_WORKERS: "2"
-      # Uncomment (and pass --live-devin below) for real Devin sessions:
-      # DEVIN_API_KEY: ${DEVIN_API_KEY}
+      # Real Devin sessions need a key in the shell that runs compose; without
+      # one this stays empty and the demo runs simulated sessions.
+      DEVIN_API_KEY: ${DEVIN_API_KEY:-}
     command: ["--rate", "2", "--speed", "2"]
