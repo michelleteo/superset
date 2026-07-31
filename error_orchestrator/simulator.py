@@ -84,6 +84,9 @@ class ErrorScenario:
     variants: tuple[Frame, ...] = ()
     #: Which fix the demo Devin double proposes; drives the risk tier.
     fix: str = "safe"
+    #: A diff against the file this scenario actually fails in. Scenarios built
+    #: from a real defect carry one; the rest fall back to the ``fix`` catalog.
+    diff: str | None = None
     #: Fraction of remediation attempts that fail to reproduce.
     flaky: float = 0.0
     weight: float = 1.0
@@ -533,6 +536,8 @@ class ErrorSimulator:
             # frames and hash back into the base pool.
             variants=(),
             fix=base.fix,
+            # Same defect down another call path, so the same guard fixes it.
+            diff=base.diff,
             flaky=base.flaky,
             weight=base.weight * 0.5,
             # Include the call parentheses: a bare "..._path4" would also be a
@@ -805,9 +810,10 @@ class DemoDevinClient:
                     "reason": "could not reproduce locally against master",
                 }
             fix = scenario.fix if scenario else "safe"
+            diff = (scenario.diff if scenario else None) or DIFFS.get(fix, SAFE_DIFF)
             return {
                 "reproduced": True,
-                "diff": DIFFS.get(fix, SAFE_DIFF),
+                "diff": diff,
                 "summary": f"fix for {scenario.title if scenario else 'error'}",
                 "test_added": fix in ("safe", "deps"),
                 "branch": f"devin/fix-{scenario.key if scenario else 'error'}",

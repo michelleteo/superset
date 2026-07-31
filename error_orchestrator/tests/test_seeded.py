@@ -133,3 +133,9 @@ def test_an_unlimited_budget_still_honours_the_selected_stages() -> None:
     assert isinstance(devin, BudgetedDevinClient)
     assert devin._use_live("remediate") is True
     assert devin._use_live("triage") is False
+
+
+def test_simulated_remediation_patches_the_file_the_bug_lives_in() -> None:
+    for scenario in seeded_scenarios():
+        assert scenario.diff, scenario.key
+        assert scenario.frames[0].file in scenario.diff, scenario.key

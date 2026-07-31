@@ -48,7 +48,10 @@ python -m error_orchestrator.seeded.reproduce <key>   # exit 1 while broken, 0 o
 ```
 
 That command is also what reaches the remediation prompt and the ticket, so a
-Devin session has a check to iterate against.
+Devin session has a check to iterate against. In simulated mode each bug's
+ticket carries the *Remediation* listed below as a diff against the file the
+traceback names, so the board shows a fix for the bug in hand rather than a
+placeholder patch.
 
 ## The Superset defects
 

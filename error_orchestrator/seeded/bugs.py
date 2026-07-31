@@ -51,6 +51,10 @@ class SeededBug:
     logger: str
     #: Calling this raises the defect's exception.
     trigger: Callable[[], object]
+    #: The guard the defect is missing, as a diff against the file it lives in.
+    #: Simulated remediation proposes this instead of a generic patch, so a
+    #: seeded run shows a fix for the bug actually on the ticket.
+    fix_diff: str = ""
 
     @property
     def repro_command(self) -> str:
@@ -64,6 +68,13 @@ SEEDED_BUGS: tuple[SeededBug, ...] = (
         message="Chart data query failed: ad-hoc query context has no datasource",
         logger="error_orchestrator.seeded.app.get_column_names",
         trigger=lambda: app.get_column_names(app.QueryContext()),
+        fix_diff="""--- a/error_orchestrator/seeded/app.py
++++ b/error_orchestrator/seeded/app.py
+@@ def get_column_names(query_context: QueryContext) -> list[str]:
+-    return list(query_context.datasource.data.get("columns", []))
++    datasource = query_context.datasource
++    return list(datasource.data.get("columns", [])) if datasource else []
+""",
     ),
     SeededBug(
         key="seeded_granularity_keyerror",
@@ -71,6 +82,16 @@ SEEDED_BUGS: tuple[SeededBug, ...] = (
         message="Time filter status failed for a chart with no temporal column",
         logger="error_orchestrator.seeded.app.get_time_filter_status",
         trigger=lambda: app.get_time_filter_status({"viz_type": "table"}),
+        fix_diff="""--- a/error_orchestrator/seeded/app.py
++++ b/error_orchestrator/seeded/app.py
+@@ def get_time_filter_status(form_data: Mapping[str, Any]) -> dict[str, Any]:
+-    temporal_column = form_data["granularity_sqla"]
+-    return {"column": temporal_column, "applied": True}
++    temporal_column = form_data.get("granularity_sqla")
++    if temporal_column is None:
++        return {"column": None, "applied": False}
++    return {"column": temporal_column, "applied": True}
+""",
     ),
     SeededBug(
         key="seeded_date_parser",
@@ -78,6 +99,14 @@ SEEDED_BUGS: tuple[SeededBug, ...] = (
         message="Could not parse the date range the explore UI submitted",
         logger="error_orchestrator.seeded.app.parse_human_datetime",
         trigger=lambda: app.parse_human_datetime(""),
+        fix_diff="""--- a/error_orchestrator/seeded/app.py
++++ b/error_orchestrator/seeded/app.py
+@@ def parse_human_datetime(human_readable: str) -> datetime:
+-    return datetime.strptime(human_readable, "%Y-%m-%d")
++    if not human_readable.strip():
++        raise ValueError("no date range was submitted")
++    return datetime.strptime(human_readable.strip(), "%Y-%m-%d")
+""",
     ),
     SeededBug(
         key="seeded_csv_encoding",
@@ -85,6 +114,15 @@ SEEDED_BUGS: tuple[SeededBug, ...] = (
         message="CSV export failed on a latin-1 encoded result cell",
         logger="error_orchestrator.seeded.app.rows_to_csv",
         trigger=lambda: app.rows_to_csv([[b"ok", b"caf\xe9"]]),
+        fix_diff="""--- a/error_orchestrator/seeded/app.py
++++ b/error_orchestrator/seeded/app.py
+@@ def rows_to_csv(rows: Sequence[Sequence[bytes]]) -> str:
+-    return "\\n".join(",".join(cell.decode("utf-8") for cell in row) for row in rows)
++    return "\\n".join(
++        ",".join(cell.decode("utf-8", errors="replace") for cell in row)
++        for row in rows
++    )
+""",
     ),
     SeededBug(
         key="superset_country_symbol_none",
@@ -92,6 +130,14 @@ SEEDED_BUGS: tuple[SeededBug, ...] = (
         message="Country lookup failed for a chart whose country column is unset",
         logger="superset.examples.countries.get",
         trigger=superset_app.country_lookup_without_symbol,
+        fix_diff="""--- a/superset/examples/countries.py
++++ b/superset/examples/countries.py
+@@ def get(field: str, symbol: str) -> Optional[dict[str, Any]]:
+-    return all_lookups[field].get(symbol.lower())
++    if not symbol:
++        return None
++    return all_lookups[field].get(symbol.lower())
+""",
     ),
     SeededBug(
         key="superset_country_unknown_field",
@@ -99,6 +145,15 @@ SEEDED_BUGS: tuple[SeededBug, ...] = (
         message="Country lookup failed for a code standard that is not indexed",
         logger="superset.examples.countries.get",
         trigger=superset_app.country_lookup_unknown_field,
+        fix_diff="""--- a/superset/examples/countries.py
++++ b/superset/examples/countries.py
+@@ def get(field: str, symbol: str) -> Optional[dict[str, Any]]:
+-    return all_lookups[field].get(symbol.lower())
++    lookup = all_lookups.get(field)
++    if lookup is None:
++        raise ValueError(f"unknown country field {field}; try one of {lookups}")
++    return lookup.get(symbol.lower())
+""",
     ),
     SeededBug(
         key="superset_class_name_no_module",
@@ -106,6 +161,13 @@ SEEDED_BUGS: tuple[SeededBug, ...] = (
         message="Config loading failed on a class name with no module path",
         logger="superset.utils.class_utils.load_class_from_name",
         trigger=superset_app.class_name_without_module,
+        fix_diff="""--- a/superset/utils/class_utils.py
++++ b/superset/utils/class_utils.py
+@@ def load_class_from_name(fq_class_name: str) -> Any:
+-    if not fq_class_name:
++    if not fq_class_name or "." not in fq_class_name:
+         raise ValueError(f"Invalid class name {fq_class_name}")
+""",
     ),
 )
 
@@ -177,6 +239,7 @@ def scenario_for(bug: SeededBug) -> ErrorScenario:
         message=f"{bug.message} (reproduce: {bug.repro_command})",
         frames=frames,
         fix="safe",
+        diff=bug.fix_diff or None,
         match_hint=bug.key,
     )
 
