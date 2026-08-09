@@ -685,11 +685,11 @@ class TestChartApi(ApiEditorsTestCaseMixin, InsertChartMixin, SupersetTestCase):
 
     def test_create_chart_datasource_forbidden(self):
         """
-        Chart API: Test create when the user cannot access the datasource
+        Chart API: Test create returns 403 when the user cannot access the datasource
 
-        ``post()`` catches ``DashboardsForbiddenError``, ``ChartInvalidError`` and
-        ``ChartCreateFailedError``, but not ``ChartForbiddenError``, so the error
-        escapes the handler and is turned into a 500 by FAB's ``@safe``.
+        ``CreateChartCommand.validate()`` raises ``ChartForbiddenError`` when
+        ``raise_for_access`` fails for the chart's datasource, and ``post()``
+        turns it into a 403, matching ``put()``/``delete()``.
         """
         slice_name = "forbidden_datasource_chart"
         chart_data = {
@@ -709,7 +709,7 @@ class TestChartApi(ApiEditorsTestCaseMixin, InsertChartMixin, SupersetTestCase):
             ),
         ):
             rv = self.client.post("api/v1/chart/", json=chart_data)
-        assert rv.status_code == 500
+        assert rv.status_code == 403
         assert self._get_chart_by_name(slice_name) is None
 
     @pytest.mark.usefixtures("load_world_bank_dashboard_with_slices")
