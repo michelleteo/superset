@@ -21,10 +21,12 @@ from unittest.mock import patch
 import pytest
 import yaml
 from flask import g  # noqa: F401
+from sqlalchemy.exc import SQLAlchemyError
 
 from superset import db, security_manager
 from superset.commands.chart.create import CreateChartCommand
 from superset.commands.chart.exceptions import (
+    ChartCreateFailedError,
     ChartForbiddenError,
     ChartNotFoundError,
     WarmUpCacheChartNotFoundError,
@@ -63,6 +65,7 @@ from tests.integration_tests.fixtures.importexport import (
     database_metadata_config,
     dataset_config,
 )
+from tests.integration_tests.test_app import app
 
 
 class TestExportChartsCommand(SupersetTestCase):
@@ -393,6 +396,161 @@ class TestChartsCreateCommand(SupersetTestCase):
         assert user_is_editor(user, chart)
         db.session.delete(chart)
         db.session.commit()
+
+    @patch("superset.utils.core.g")
+    @patch("superset.commands.chart.create.g")
+    @patch("superset.security.manager.g")
+    @pytest.mark.usefixtures("load_energy_table_with_slice")
+    def test_create_persists_viewers(self, mock_sm_g, mock_c_g, mock_u_g):
+        """Viewer subject ids are resolved by populate_subjects and persisted"""
+        user = security_manager.find_user(username="admin")
+        gamma = security_manager.find_user(username="gamma")
+        mock_u_g.user = mock_c_g.user = mock_sm_g.user = user
+        viewer_subject = subjects_from_users([gamma])[0]
+
+        command = CreateChartCommand(
+            {
+                "slice_name": "chart with viewers",
+                "datasource_id": 1,
+                "datasource_type": "table",
+                "viewers": [viewer_subject.id],
+            }
+        )
+        chart = command.run()
+
+        chart = db.session.query(Slice).get(chart.id)
+        assert [subject.id for subject in chart.viewers] == [viewer_subject.id]
+        # editors still default to the creator
+        assert user_is_editor(user, chart)
+
+        db.session.delete(chart)
+        db.session.commit()
+
+    @patch("superset.utils.core.g")
+    @patch("superset.commands.chart.create.g")
+    @patch("superset.security.manager.g")
+    @pytest.mark.usefixtures("load_energy_table_with_slice")
+    def test_create_persists_last_saved_fields(self, mock_sm_g, mock_c_g, mock_u_g):
+        """last_saved_at/last_saved_by are stamped on the created Slice"""
+        user = security_manager.find_user(username="admin")
+        mock_u_g.user = mock_c_g.user = mock_sm_g.user = user
+        before = datetime.now()
+
+        command = CreateChartCommand(
+            {
+                "slice_name": "chart with last saved",
+                "datasource_id": 1,
+                "datasource_type": "table",
+            }
+        )
+        chart = command.run()
+
+        chart = db.session.query(Slice).get(chart.id)
+        assert chart.last_saved_by == user
+        assert chart.last_saved_at is not None
+        # MySQL stores DATETIME(0), so compare at second precision
+        assert chart.last_saved_at >= before.replace(microsecond=0)
+
+        db.session.delete(chart)
+        db.session.commit()
+
+    @patch("superset.commands.chart.create.security_manager.raise_for_access")
+    @patch("superset.utils.core.g")
+    @patch("superset.commands.chart.create.g")
+    @patch("superset.security.manager.g")
+    @pytest.mark.usefixtures("load_energy_table_with_slice")
+    def test_create_non_admin_is_added_as_editor(
+        self, mock_sm_g, mock_c_g, mock_u_g, mock_raise_for_access
+    ):
+        """A non-admin creator that omits itself from `editors` is added back by
+        the `ensure_no_lockout` branch of populate_subject_list"""
+        gamma = security_manager.find_user(username="gamma")
+        admin = security_manager.find_user(username="admin")
+        mock_u_g.user = mock_c_g.user = mock_sm_g.user = gamma
+        admin_subject = subjects_from_users([admin])[0]
+
+        command = CreateChartCommand(
+            {
+                "slice_name": "chart without self as editor",
+                "datasource_id": 1,
+                "datasource_type": "table",
+                "editors": [admin_subject.id],
+            }
+        )
+        chart = command.run()
+
+        chart = db.session.query(Slice).get(chart.id)
+        assert user_is_editor(gamma, chart)
+        assert user_is_editor(admin, chart)
+
+        db.session.delete(chart)
+        db.session.commit()
+
+    @patch("superset.commands.chart.create.security_manager.raise_for_access")
+    @patch("superset.utils.core.g")
+    @patch("superset.commands.chart.create.g")
+    @patch("superset.security.manager.g")
+    @pytest.mark.usefixtures("load_energy_table_with_slice")
+    def test_create_extra_editors_resolver_suppresses_auto_add(
+        self, mock_sm_g, mock_c_g, mock_u_g, mock_raise_for_access
+    ):
+        """An EXTRA_EDITORS_RESOLVER deployment resolves editorship elsewhere, so
+        the non-admin creator is not force-added to `editors`"""
+        gamma = security_manager.find_user(username="gamma")
+        admin = security_manager.find_user(username="admin")
+        mock_u_g.user = mock_c_g.user = mock_sm_g.user = gamma
+        admin_subject = subjects_from_users([admin])[0]
+
+        with patch.dict(
+            app.config,
+            {"EXTRA_EDITORS_RESOLVER": lambda resource: []},
+        ):
+            command = CreateChartCommand(
+                {
+                    "slice_name": "chart with resolver",
+                    "datasource_id": 1,
+                    "datasource_type": "table",
+                    "editors": [admin_subject.id],
+                }
+            )
+            chart = command.run()
+
+        chart = db.session.query(Slice).get(chart.id)
+        assert not user_is_editor(gamma, chart)
+        assert user_is_editor(admin, chart)
+
+        db.session.delete(chart)
+        db.session.commit()
+
+    @patch("superset.commands.chart.create.ChartDAO.create")
+    @patch("superset.utils.core.g")
+    @patch("superset.commands.chart.create.g")
+    @patch("superset.security.manager.g")
+    @pytest.mark.usefixtures("load_energy_table_with_slice")
+    def test_create_dao_failure_raises_create_failed(
+        self, mock_sm_g, mock_c_g, mock_u_g, mock_dao_create
+    ):
+        """A SQLAlchemyError from the DAO is converted to ChartCreateFailedError
+        and the transaction is rolled back"""
+        user = security_manager.find_user(username="admin")
+        mock_u_g.user = mock_c_g.user = mock_sm_g.user = user
+        mock_dao_create.side_effect = SQLAlchemyError("insert failed")
+        slice_name = "chart that fails to persist"
+
+        command = CreateChartCommand(
+            {
+                "slice_name": slice_name,
+                "datasource_id": 1,
+                "datasource_type": "table",
+            }
+        )
+        with pytest.raises(ChartCreateFailedError):
+            command.run()
+
+        assert (
+            db.session.query(Slice).filter_by(slice_name=slice_name).one_or_none()
+            is None
+        )
 
 
 class TestChartsUpdateCommand(SupersetTestCase):

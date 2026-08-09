@@ -15,6 +15,9 @@
 # specific language governing permissions and limitations
 # under the License.
 
+from typing import Any
+from uuid import UUID
+
 import pytest
 from flask import current_app
 from marshmallow import ValidationError
@@ -29,6 +32,7 @@ from superset.charts.schemas import (
     get_max_prophet_periods,
     get_time_grain_choices,
 )
+from superset.utils.core import DatasourceType
 
 
 def test_get_time_grain_choices(app_context: None) -> None:
@@ -420,3 +424,173 @@ def test_chart_external_url_rejects_non_absolute(app_context: None, url: str) ->
             }
         )
     assert "external_url" in exc_info.value.messages
+
+
+def _chart_post_payload(**overrides: Any) -> dict[str, Any]:
+    """A minimal valid ChartPostSchema payload, with optional overrides."""
+    payload: dict[str, Any] = {
+        "slice_name": "test",
+        "datasource_id": 1,
+        "datasource_type": "table",
+    }
+    payload.update(overrides)
+    return payload
+
+
+def test_chart_post_schema_minimal_payload(app_context: None) -> None:
+    """The required trio of fields is enough to load a POST payload."""
+    result = ChartPostSchema().load(_chart_post_payload())
+    assert result == {
+        "slice_name": "test",
+        "datasource_id": 1,
+        "datasource_type": "table",
+    }
+
+
+@pytest.mark.parametrize("missing", ["slice_name", "datasource_id", "datasource_type"])
+def test_chart_post_schema_required_fields(app_context: None, missing: str) -> None:
+    """slice_name, datasource_id and datasource_type are all required on POST."""
+    payload = _chart_post_payload()
+    del payload[missing]
+    with pytest.raises(ValidationError) as exc_info:
+        ChartPostSchema().load(payload)
+    assert exc_info.value.messages[missing] == ["Missing data for required field."]
+
+
+@pytest.mark.parametrize("slice_name", ["a", "a" * 250])
+def test_chart_post_schema_slice_name_within_bounds(
+    app_context: None, slice_name: str
+) -> None:
+    """slice_name accepts the inclusive Length(1, 250) boundaries."""
+    result = ChartPostSchema().load(_chart_post_payload(slice_name=slice_name))
+    assert result["slice_name"] == slice_name
+
+
+@pytest.mark.parametrize("slice_name", ["", "a" * 251])
+def test_chart_post_schema_slice_name_out_of_bounds(
+    app_context: None, slice_name: str
+) -> None:
+    """An empty or over-long slice_name is rejected (unlike PUT, which allows "")."""
+    with pytest.raises(ValidationError) as exc_info:
+        ChartPostSchema().load(_chart_post_payload(slice_name=slice_name))
+    assert "slice_name" in exc_info.value.messages
+
+
+def test_chart_post_schema_slice_name_rejects_none(app_context: None) -> None:
+    """slice_name is not nullable on POST."""
+    with pytest.raises(ValidationError) as exc_info:
+        ChartPostSchema().load(_chart_post_payload(slice_name=None))
+    assert "slice_name" in exc_info.value.messages
+
+
+@pytest.mark.parametrize("viz_type", ["", "table", "a" * 250])
+def test_chart_post_schema_viz_type_within_bounds(
+    app_context: None, viz_type: str
+) -> None:
+    """viz_type is optional and accepts Length(0, 250), empty string included."""
+    result = ChartPostSchema().load(_chart_post_payload(viz_type=viz_type))
+    assert result["viz_type"] == viz_type
+
+
+def test_chart_post_schema_viz_type_too_long(app_context: None) -> None:
+    """A viz_type longer than 250 characters is rejected."""
+    with pytest.raises(ValidationError) as exc_info:
+        ChartPostSchema().load(_chart_post_payload(viz_type="a" * 251))
+    assert "viz_type" in exc_info.value.messages
+
+
+@pytest.mark.parametrize("datasource_type", [ds.value for ds in DatasourceType])
+def test_chart_post_schema_datasource_type_allowed(
+    app_context: None, datasource_type: str
+) -> None:
+    """Every DatasourceType value is accepted."""
+    result = ChartPostSchema().load(
+        _chart_post_payload(datasource_type=datasource_type)
+    )
+    assert result["datasource_type"] == datasource_type
+
+
+@pytest.mark.parametrize("datasource_type", ["Table", "sqlatable", "", "druid"])
+def test_chart_post_schema_datasource_type_rejected(
+    app_context: None, datasource_type: str
+) -> None:
+    """Values outside the DatasourceType enum are rejected by the OneOf validator."""
+    with pytest.raises(ValidationError) as exc_info:
+        ChartPostSchema().load(_chart_post_payload(datasource_type=datasource_type))
+    assert "datasource_type" in exc_info.value.messages
+    assert "Must be one of" in str(exc_info.value.messages["datasource_type"])
+
+
+@pytest.mark.parametrize("field", ["params", "query_context"])
+def test_chart_post_schema_json_fields_accept_valid_json(
+    app_context: None, field: str
+) -> None:
+    """params/query_context accept a JSON string or None."""
+    schema = ChartPostSchema()
+    assert schema.load(_chart_post_payload(**{field: '{"a": 1}'}))[field] == '{"a": 1}'
+    assert schema.load(_chart_post_payload(**{field: None}))[field] is None
+
+
+@pytest.mark.parametrize("field", ["params", "query_context"])
+@pytest.mark.parametrize("value", ["{not valid json", "{'a': 1}", "[1, 2"])
+def test_chart_post_schema_json_fields_reject_invalid_json(
+    app_context: None, field: str, value: str
+) -> None:
+    """Malformed JSON is rejected before ``CreateChartCommand`` parses it."""
+    with pytest.raises(ValidationError) as exc_info:
+        ChartPostSchema().load(_chart_post_payload(**{field: value}))
+    assert field in exc_info.value.messages
+
+
+@pytest.mark.parametrize("field", ["params", "query_context"])
+def test_chart_post_schema_json_fields_allow_empty_string(
+    app_context: None, field: str
+) -> None:
+    """``validate_json`` only parses truthy values, so "" passes validation.
+
+    ``CreateChartCommand`` tolerates it too: its walrus guard skips falsy
+    ``params``.
+    """
+    assert ChartPostSchema().load(_chart_post_payload(**{field: ""}))[field] == ""
+
+
+def test_chart_post_schema_is_managed_externally(app_context: None) -> None:
+    """is_managed_externally is an optional, nullable boolean."""
+    schema = ChartPostSchema()
+    assert schema.load(_chart_post_payload(is_managed_externally=True))[
+        "is_managed_externally"
+    ]
+    assert (
+        schema.load(_chart_post_payload(is_managed_externally=None))[
+            "is_managed_externally"
+        ]
+        is None
+    )
+    # The dump_default is not applied on load, so the key stays absent
+    assert "is_managed_externally" not in schema.load(_chart_post_payload())
+
+    with pytest.raises(ValidationError) as exc_info:
+        schema.load(_chart_post_payload(is_managed_externally="not-a-bool"))
+    assert "is_managed_externally" in exc_info.value.messages
+
+
+def test_chart_post_schema_uuid(app_context: None) -> None:
+    """uuid is coerced to a UUID object and malformed values are rejected."""
+    schema = ChartPostSchema()
+    value = "c9b1d9e0-1d3f-4a1b-9f3a-2b7c1d0e5f6a"
+    assert schema.load(_chart_post_payload(uuid=value))["uuid"] == UUID(value)
+    assert schema.load(_chart_post_payload(uuid=None))["uuid"] is None
+
+    with pytest.raises(ValidationError) as exc_info:
+        schema.load(_chart_post_payload(uuid="not-a-uuid"))
+    assert "uuid" in exc_info.value.messages
+
+
+def test_chart_post_schema_rejects_tags(app_context: None) -> None:
+    """``tags`` is not a POST field: create rejects it as an unknown field while
+    update accepts it, so tagging a new chart requires a follow-up PUT."""
+    with pytest.raises(ValidationError) as exc_info:
+        ChartPostSchema().load(_chart_post_payload(tags=[1, 2]))
+    assert exc_info.value.messages == {"tags": ["Unknown field."]}
+
+    assert ChartPutSchema().load({"tags": [1, 2]})["tags"] == [1, 2]
