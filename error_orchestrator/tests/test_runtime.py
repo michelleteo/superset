@@ -68,6 +68,12 @@ def test_reviewers_accept_a_comma_separated_string() -> None:
         {"risk_check_workers": 9, "remediation_workers": 2},
         {"live_devin_stages": ["deploy"]},
         {"rate": "fast"},
+        {"triage_workers": "many"},
+        {"reviewers": []},
+        {"reviewers": 5},
+        {"duplicate_rate": 0.8, "variant_rate": 0.5},
+        {"review_interval": 0},
+        {"live_devin_budget": -1},
     ],
 )
 def test_settings_that_would_break_a_run_are_rejected(

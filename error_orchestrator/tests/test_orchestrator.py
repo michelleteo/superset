@@ -18,14 +18,17 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 from typing import Any, AsyncIterator, Mapping
 
 import pytest
 
 from error_orchestrator.config import OrchestratorConfig
 from error_orchestrator.devin_client import ScriptedDevinClient
+from error_orchestrator.handlers.triage import TriageAction, TriageDecision
 from error_orchestrator.models import ErrorPool, PoolState
 from error_orchestrator.orchestrator import Orchestrator
+from error_orchestrator.review import ReviewError
 from error_orchestrator.simulation import classify_prompt, RISKY_DIFF, SAFE_DIFF
 from error_orchestrator.tests.conftest import make_event
 
@@ -216,6 +219,115 @@ async def test_full_ingest_queue_drops_instead_of_blocking() -> None:
     assert orchestrator.submit(make_event()) is True
     assert orchestrator.submit(make_event()) is False
     assert orchestrator.stats()["queues"]["dropped_events"] == 1
+
+
+async def test_an_ingest_failure_does_not_stop_the_next_event() -> None:
+    orchestrator = Orchestrator(config=_config(), devin=_responder())
+    original = orchestrator.handle_event
+    calls = 0
+
+    async def flaky(event: Any) -> Any:
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            raise RuntimeError("store unavailable")
+        return await original(event)
+
+    orchestrator.handle_event = flaky  # type: ignore[method-assign]
+    await _run(orchestrator, events=2)
+
+    assert calls == 2
+    assert len(list(orchestrator.store.all_pools())) == 1
+
+
+async def test_triage_merges_a_variant_into_the_category_it_named() -> None:
+    orchestrator = Orchestrator(config=_config(), devin=_responder())
+    seed = orchestrator.store.record_event(make_event())
+    pool = orchestrator.store.create_pool(seed.fingerprint, seed.canonical)
+    variant = make_event(
+        traceback=(make_event().traceback or "").replace("explore", "explore_json")
+    )
+    result = orchestrator.store.record_event(variant)
+
+    merged = orchestrator.apply_triage(
+        result,
+        TriageDecision(
+            action=TriageAction.MERGE,
+            fingerprint=result.fingerprint,
+            pool_id=pool.pool_id,
+            summary="same root cause",
+        ),
+    )
+
+    assert merged is pool
+    assert result.fingerprint in pool.merged_fingerprints
+    assert orchestrator.decisions[-1].detail["merged"] is True
+
+
+@pytest.mark.parametrize(
+    ("enabled", "expected"), [(False, "auto-merge disabled"), (True, "auto-merging")]
+)
+async def test_auto_merge_is_a_dry_run_unless_it_is_enabled(
+    caplog: pytest.LogCaptureFixture, enabled: bool, expected: str
+) -> None:
+    orchestrator = Orchestrator(
+        config=_config(auto_merge_enabled=enabled), devin=_responder()
+    )
+    with caplog.at_level(logging.INFO, logger="error_orchestrator.orchestrator"):
+        await _run(orchestrator)
+
+    pool = next(iter(orchestrator.store.all_pools()))
+    assert pool.state is PoolState.AUTO_MERGED
+    assert expected in caplog.text
+
+
+async def test_a_human_can_revert_an_auto_merge_but_only_a_real_one() -> None:
+    orchestrator = Orchestrator(config=_config(), devin=_responder())
+    await _run(orchestrator)
+    pool = next(iter(orchestrator.store.all_pools()))
+
+    item = orchestrator.revert_merge(pool.pool_id, by="ana", reason="regression")
+
+    assert pool.state is PoolState.AWAITING_REVIEW
+    assert pool.review_reason == "regression"
+    assert item.open
+
+    with pytest.raises(ReviewError, match="not auto_merged"):
+        orchestrator.revert_merge(pool.pool_id)
+    with pytest.raises(ReviewError, match="unknown pool"):
+        orchestrator.revert_merge("nope")
+
+
+async def test_clearing_a_terminal_pool_is_recorded_for_the_dashboard() -> None:
+    orchestrator = Orchestrator(config=_config(), devin=_responder())
+    await _run(orchestrator)
+    pool = next(iter(orchestrator.store.all_pools()))
+
+    item = orchestrator.clear_review(pool.pool_id, by="bo", resolution="shipped")
+
+    assert (item.cleared_by, item.resolution) == ("bo", "shipped")
+    assert orchestrator.review_queue.stats()["open"] == 0
+
+
+async def test_a_risk_check_for_a_pool_that_moved_on_is_skipped() -> None:
+    orchestrator = Orchestrator(config=_config(), devin=_responder())
+    seed = orchestrator.store.record_event(make_event())
+    pool = orchestrator.store.create_pool(seed.fingerprint, seed.canonical)
+
+    await orchestrator._run_risk_check("nope")  # noqa: SLF001 - internal lane step
+    await orchestrator._run_risk_check(pool.pool_id)  # noqa: SLF001
+
+    assert pool.state is PoolState.TRIAGED
+    with pytest.raises(ValueError, match="no proposed fix"):
+        orchestrator.build_risk_request(pool)
+
+
+async def test_draining_gives_up_when_the_work_never_finishes() -> None:
+    orchestrator = Orchestrator(config=_config(), devin=_responder())
+    orchestrator.submit(make_event())
+
+    # The lanes were never started, so the event cannot leave the queue.
+    assert await orchestrator.drain(timeout=0.05) is False
 
 
 @pytest.fixture(autouse=True)

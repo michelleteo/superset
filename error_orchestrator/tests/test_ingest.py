@@ -140,3 +140,51 @@ def test_pools_stay_serializable_after_a_non_finite_payload() -> None:
         assert client.get("/stats").status_code == 200
         pool = client.get("/pools").json()["pools"][0]
         assert client.get(f"/pools/{pool['pool_id']}").status_code == 200
+
+
+class _Unreadable:
+    """A value that blows up the moment the parser touches it."""
+
+    def __str__(self) -> str:
+        raise UnicodeDecodeError("utf-8", b"", 0, 1, "bad bytes")
+
+
+def test_a_record_that_cannot_be_parsed_is_dropped_not_raised() -> None:
+    events = payload_to_events([{**MCP_PAYLOAD, "logger": _Unreadable()}, MCP_PAYLOAD])
+
+    assert len(events) == 1
+
+
+def test_a_body_that_is_not_json_is_a_client_error() -> None:
+    orchestrator = Orchestrator(
+        config=OrchestratorConfig(
+            triage_workers=1, remediation_workers=1, risk_check_workers=1
+        ),
+        devin=make_dry_run_client(),
+    )
+    with TestClient(create_app(orchestrator)) as client:
+        response = client.post(
+            "/webhook/errors",
+            content="not json at all",
+            headers={"Content-Type": "application/json"},
+        )
+
+    assert response.status_code == 400
+    assert response.json() == {"error": "invalid json"}
+
+
+def test_pools_can_be_filtered_by_state() -> None:
+    orchestrator = Orchestrator(
+        config=OrchestratorConfig(
+            triage_workers=1, remediation_workers=1, risk_check_workers=1
+        ),
+        devin=make_dry_run_client(),
+    )
+    with TestClient(create_app(orchestrator)) as client:
+        client.post("/webhook/errors", json=MCP_PAYLOAD)
+        deadline = time.time() + 5
+        while time.time() < deadline and not orchestrator.store.pools:
+            time.sleep(0.05)
+
+        assert client.get("/pools", params={"state": "new"}).json()["pools"] == []
+        assert len(client.get("/pools").json()["pools"]) == 1

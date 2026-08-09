@@ -17,10 +17,18 @@
 
 from __future__ import annotations
 
+import asyncio
+from typing import Callable
+
 import pytest
 
 from error_orchestrator.models import ErrorPool, PoolState
-from error_orchestrator.review import ReviewError, ReviewQueue
+from error_orchestrator.review import (
+    AutoReviewer,
+    ReviewError,
+    ReviewItem,
+    ReviewQueue,
+)
 
 
 def _pool(state: PoolState, title: str = "boom") -> ErrorPool:
@@ -114,3 +122,77 @@ def test_backlog_is_ordered_oldest_first() -> None:
 def test_queue_requires_a_reviewer() -> None:
     with pytest.raises(ValueError, match="reviewer"):
         ReviewQueue([])
+
+
+# --------------------------------------------------- the stand-in reviewers
+
+
+async def _run_reviewer(reviewer: AutoReviewer, until: Callable[[], bool]) -> None:
+    """Let the loop tick until it has done its work (or fail the test)."""
+    reviewer.start()
+    try:
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + 2.0
+        while loop.time() < deadline:
+            if until():
+                return
+            await asyncio.sleep(0.01)
+        raise AssertionError("the auto reviewer never got there")
+    finally:
+        await reviewer.stop()
+
+
+@pytest.mark.asyncio
+async def test_the_stand_in_reviewer_clears_the_oldest_item_first() -> None:
+    queue = ReviewQueue(["ana"])
+    first = queue.assign(_pool(PoolState.AWAITING_REVIEW, "one"))
+    queue.assign(_pool(PoolState.AWAITING_REVIEW, "two"))
+    reviewer = AutoReviewer(queue, interval=0.0, jitter=0.0, seed=1)
+
+    await _run_reviewer(reviewer, lambda: reviewer.cleared >= 1)
+
+    assert queue.items[first.pool_id].open is False
+    assert queue.stats()["open"] >= 1
+
+
+@pytest.mark.asyncio
+async def test_a_disabled_reviewer_leaves_the_backlog_for_a_human() -> None:
+    queue = ReviewQueue(["ana"])
+    queue.assign(_pool(PoolState.AWAITING_REVIEW))
+    reviewer = AutoReviewer(queue, interval=0.0, jitter=0.0, enabled=False, seed=1)
+
+    reviewer.start()
+    await asyncio.sleep(0.3)
+    await reviewer.stop()
+
+    assert reviewer.cleared == 0
+    assert queue.stats()["open"] == 1
+
+
+@pytest.mark.asyncio
+async def test_an_item_a_human_got_to_first_is_not_counted_twice() -> None:
+    queue = ReviewQueue(["ana"])
+    pool = _pool(PoolState.AWAITING_REVIEW)
+    queue.assign(pool)
+    attempts = 0
+
+    def clear(pool_id: str) -> ReviewItem:
+        nonlocal attempts
+        attempts += 1
+        raise ReviewError("already cleared")
+
+    reviewer = AutoReviewer(queue, interval=0.0, jitter=0.0, seed=1, clear=clear)
+
+    await _run_reviewer(reviewer, lambda: attempts >= 2)
+
+    assert reviewer.cleared == 0
+
+
+@pytest.mark.asyncio
+async def test_stopping_a_reviewer_that_never_started_is_harmless() -> None:
+    reviewer = AutoReviewer(ReviewQueue(["ana"]), interval=0.0)
+    await reviewer.stop()
+
+    reviewer.start()
+    reviewer.start()
+    await reviewer.stop()

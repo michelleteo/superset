@@ -156,3 +156,65 @@ def test_snapshot_counts_states() -> None:
     store.create_pool(result.fingerprint, canonicalize(event))
     assert store.snapshot()[PoolState.TRIAGED.value] == 1
     assert store.snapshot()[PoolState.AUTO_MERGED.value] == 0
+
+
+def test_abandoning_triage_hands_the_buffered_events_back() -> None:
+    store = PoolStore()
+    first = store.record_event(make_event())
+    store.record_event(make_event(user_id="u2"))
+
+    released = store.abandon_triage(first.fingerprint)
+
+    assert [event.user_id for event in released] == ["u1", "u2"]
+    # Nothing is left buffered, so the next occurrence starts triage again.
+    assert store.abandon_triage(first.fingerprint) == []
+    assert store.record_event(make_event()).outcome is IngestOutcome.NEEDS_TRIAGE
+
+
+def test_releasing_a_pool_only_re_queues_one_still_awaiting_remediation() -> None:
+    store = PoolStore()
+    pool_id = _seed_pool(store)
+    mid_flight = store.next_pool_for_remediation()
+    assert mid_flight is not None
+    assert mid_flight.state is PoolState.REPRODUCING
+
+    store.release(mid_flight)
+
+    assert mid_flight.claimed is False
+    assert store.next_pool_for_remediation() is None
+
+    # A pool claimed while still queued goes back to the front of the heap.
+    queued = store.pools[pool_id]
+    queued.state = PoolState.TRIAGED
+    queued.claimed = True
+    store.release(queued)
+
+    requeued = store.next_pool_for_remediation()
+    assert requeued is not None
+    assert requeued.pool_id == pool_id
+
+
+def test_lookups_answer_for_pools_that_do_not_exist() -> None:
+    store = PoolStore()
+    pool_id = _seed_pool(store)
+
+    assert store.get(pool_id) is store.pools[pool_id]
+    assert store.get("nope") is None
+    assert store.pool_for_fingerprint("nope") is None
+    assert store.by_state(PoolState.AUTO_MERGED) == []
+    assert list(store.all_pools()) == [store.pools[pool_id]]
+
+
+def test_merge_candidates_are_the_most_recently_seen_categories() -> None:
+    store = PoolStore()
+    traceback = make_event().traceback or ""
+    ids = [
+        _seed_pool(store, {"traceback": traceback.replace("412", str(line))})
+        for line in (401, 402, 403)
+    ]
+
+    candidates = store.candidates_for_merge(limit=2)
+
+    assert len(candidates) == 2
+    assert {pool.pool_id for pool in candidates} <= set(ids)
+    assert candidates[0].last_seen >= candidates[1].last_seen
