@@ -16,6 +16,8 @@
 # under the License.
 
 import uuid
+from collections.abc import Iterator
+from contextlib import contextmanager
 from io import BytesIO
 from unittest import mock
 from unittest.mock import patch
@@ -23,14 +25,18 @@ from zipfile import is_zipfile
 
 import pytest
 import rison
+from flask import current_app
 from flask_babel import lazy_gettext as _
 from parameterized import parameterized
 from sqlalchemy import and_
+from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.sql import func
 
 from superset.commands.chart.data.get_data_command import ChartDataCommand
 from superset.commands.chart.exceptions import ChartDataQueryFailedError
 from superset.connectors.sqla.models import SqlaTable
+from superset.errors import ErrorLevel, SupersetError, SupersetErrorType
+from superset.exceptions import SupersetSecurityException
 from superset.extensions import cache_manager, db, security_manager
 from superset.models.core import Database, FavStar, FavStarClassName
 from superset.models.dashboard import Dashboard
@@ -41,6 +47,7 @@ from superset.subjects.types import SubjectType
 from superset.tags.models import ObjectType, Tag, TaggedObject, TagType
 from superset.utils import json
 from superset.utils.core import get_example_default_schema
+from tests.conftest import with_config
 from tests.integration_tests.base_api_tests import ApiEditorsTestCaseMixin
 from tests.integration_tests.base_tests import (
     subjects_from_users,
@@ -672,6 +679,420 @@ class TestChartApi(ApiEditorsTestCaseMixin, InsertChartMixin, SupersetTestCase):
         assert response == {
             "message": "Changing one or more of these dashboards is forbidden"
         }
+
+    def _get_chart_by_name(self, slice_name: str) -> Slice | None:
+        return db.session.query(Slice).filter_by(slice_name=slice_name).one_or_none()
+
+    def test_create_chart_datasource_forbidden(self):
+        """
+        Chart API: Test create when the user cannot access the datasource
+
+        ``post()`` catches ``DashboardsForbiddenError``, ``ChartInvalidError`` and
+        ``ChartCreateFailedError``, but not ``ChartForbiddenError``, so the error
+        escapes the handler and is turned into a 500 by FAB's ``@safe``.
+        """
+        slice_name = "forbidden_datasource_chart"
+        chart_data = {
+            "slice_name": slice_name,
+            "datasource_id": 1,
+            "datasource_type": "table",
+        }
+        self.login(ADMIN_USERNAME)
+        with patch(
+            "superset.commands.chart.create.security_manager.raise_for_access",
+            side_effect=SupersetSecurityException(
+                SupersetError(
+                    "You don't have access to this datasource",
+                    SupersetErrorType.DATASOURCE_SECURITY_ACCESS_ERROR,
+                    ErrorLevel.ERROR,
+                )
+            ),
+        ):
+            rv = self.client.post("api/v1/chart/", json=chart_data)
+        assert rv.status_code == 500
+        assert self._get_chart_by_name(slice_name) is None
+
+    @pytest.mark.usefixtures("load_world_bank_dashboard_with_slices")
+    def test_create_chart_validate_dashboards_do_not_exist(self):
+        """
+        Chart API: Test create validates that all dashboards exist
+        """
+        dash = db.session.query(Dashboard).filter_by(slug="world_health").first()
+        slice_name = "chart_with_missing_dashboard"
+        chart_data = {
+            "slice_name": slice_name,
+            "datasource_id": 1,
+            "datasource_type": "table",
+            "dashboards": [dash.id, 0],
+        }
+        self.login(ADMIN_USERNAME)
+        rv = self.post_assert_metric("api/v1/chart/", chart_data, "post")
+        assert rv.status_code == 422
+        response = json.loads(rv.data.decode("utf-8"))
+        assert response == {"message": {"dashboards": ["Dashboards do not exist"]}}
+        assert self._get_chart_by_name(slice_name) is None
+
+    @patch("superset.commands.chart.create.ChartDAO.create")
+    def test_create_chart_dao_failure_rolls_back(self, mock_chart_dao_create):
+        """
+        Chart API: Test create returns 422 and persists nothing when the DAO fails
+        """
+        mock_chart_dao_create.side_effect = SQLAlchemyError("Chart creation failed")
+        slice_name = "chart_that_fails_to_persist"
+        chart_data = {
+            "slice_name": slice_name,
+            "datasource_id": 1,
+            "datasource_type": "table",
+        }
+        self.login(ADMIN_USERNAME)
+        rv = self.post_assert_metric("api/v1/chart/", chart_data, "post")
+        assert rv.status_code == 422
+        assert self._get_chart_by_name(slice_name) is None
+
+    @with_config({"AFTER_ASSET_CREATE": mock.MagicMock()})
+    def test_create_chart_calls_after_asset_create(self):
+        """
+        Chart API: Test create invokes the AFTER_ASSET_CREATE hook
+        """
+        after_asset_create = current_app.config["AFTER_ASSET_CREATE"]
+        chart_data = {
+            "slice_name": "chart_with_after_create_hook",
+            "datasource_id": 1,
+            "datasource_type": "table",
+        }
+        self.login(ADMIN_USERNAME)
+        rv = self.post_assert_metric("api/v1/chart/", chart_data, "post")
+        assert rv.status_code == 201
+        data = json.loads(rv.data.decode("utf-8"))
+        model = db.session.query(Slice).get(data["id"])
+        after_asset_create.assert_called_once()
+        chart_arg, asset_type = after_asset_create.call_args[0]
+        assert asset_type == "chart"
+        assert chart_arg.id == model.id
+
+        db.session.delete(model)
+        db.session.commit()
+
+    def test_create_chart_with_viewers(self):
+        """
+        Chart API: Test create with viewers (subjects)
+        """
+        gamma = self.get_user(GAMMA_USERNAME)
+        gamma_subject_id = subjects_from_users([gamma])[0].id
+        db.session.commit()
+        chart_data = {
+            "slice_name": "chart_with_viewers",
+            "datasource_id": 1,
+            "datasource_type": "table",
+            "viewers": [gamma_subject_id],
+        }
+        self.login(ADMIN_USERNAME)
+        rv = self.post_assert_metric("api/v1/chart/", chart_data, "post")
+        assert rv.status_code == 201
+        data = json.loads(rv.data.decode("utf-8"))
+        model = db.session.query(Slice).get(data["id"])
+        assert [subject.id for subject in model.viewers] == [gamma_subject_id]
+
+        db.session.delete(model)
+        db.session.commit()
+
+    def test_create_chart_validate_viewers(self):
+        """
+        Chart API: Test create validate viewers (subjects)
+        """
+        slice_name = "chart_with_invalid_viewers"
+        chart_data = {
+            "slice_name": slice_name,
+            "datasource_id": 1,
+            "datasource_type": "table",
+            "viewers": [1000],
+        }
+        self.login(ADMIN_USERNAME)
+        rv = self.post_assert_metric("api/v1/chart/", chart_data, "post")
+        assert rv.status_code == 422
+        response = json.loads(rv.data.decode("utf-8"))
+        assert response == {"message": {"viewers": ["Subjects are invalid"]}}
+        assert self._get_chart_by_name(slice_name) is None
+
+    def test_create_chart_managed_externally(self):
+        """
+        Chart API: Test create with is_managed_externally and external_url
+        """
+        chart_data = {
+            "slice_name": "externally_managed_chart",
+            "datasource_id": 1,
+            "datasource_type": "table",
+            "is_managed_externally": True,
+            "external_url": "https://example.org/charts/1",
+        }
+        self.login(ADMIN_USERNAME)
+        rv = self.post_assert_metric("api/v1/chart/", chart_data, "post")
+        assert rv.status_code == 201
+        data = json.loads(rv.data.decode("utf-8"))
+        model = db.session.query(Slice).get(data["id"])
+        assert model.is_managed_externally is True
+        assert model.external_url == "https://example.org/charts/1"
+
+        db.session.delete(model)
+        db.session.commit()
+
+    def test_create_chart_validate_external_url(self):
+        """
+        Chart API: Test create validates the external_url scheme
+        """
+        slice_name = "chart_with_invalid_external_url"
+        chart_data = {
+            "slice_name": slice_name,
+            "datasource_id": 1,
+            "datasource_type": "table",
+            "is_managed_externally": True,
+            "external_url": "javascript:alert(1)",  # noqa: S106
+        }
+        self.login(ADMIN_USERNAME)
+        rv = self.post_assert_metric("api/v1/chart/", chart_data, "post")
+        assert rv.status_code == 400
+        response = json.loads(rv.data.decode("utf-8"))
+        assert "external_url" in response["message"]
+        assert self._get_chart_by_name(slice_name) is None
+
+    def test_create_chart_with_uuid(self):
+        """
+        Chart API: Test create with a client supplied uuid
+        """
+        chart_uuid = str(uuid.uuid4())
+        chart_data = {
+            "slice_name": "chart_with_client_uuid",
+            "datasource_id": 1,
+            "datasource_type": "table",
+            "uuid": chart_uuid,
+        }
+        self.login(ADMIN_USERNAME)
+        rv = self.post_assert_metric("api/v1/chart/", chart_data, "post")
+        assert rv.status_code == 201
+        data = json.loads(rv.data.decode("utf-8"))
+        assert data["uuid"] == chart_uuid
+        model = db.session.query(Slice).get(data["id"])
+        assert str(model.uuid) == chart_uuid
+
+        db.session.delete(model)
+        db.session.commit()
+
+    def test_create_chart_with_query_context(self):
+        """
+        Chart API: Test create with query_context and query_context_generation
+
+        ``query_context_generation`` is accepted by the schema but has no column on
+        ``Slice``, so only ``query_context`` can be asserted on the model.
+        """
+        query_context = json.dumps(
+            {"datasource": {"id": 1, "type": "table"}, "queries": []}
+        )
+        chart_data = {
+            "slice_name": "chart_with_query_context",
+            "datasource_id": 1,
+            "datasource_type": "table",
+            "query_context": query_context,
+            "query_context_generation": True,
+        }
+        self.login(ADMIN_USERNAME)
+        rv = self.post_assert_metric("api/v1/chart/", chart_data, "post")
+        assert rv.status_code == 201
+        data = json.loads(rv.data.decode("utf-8"))
+        model = db.session.query(Slice).get(data["id"])
+        assert model.query_context == query_context
+
+        db.session.delete(model)
+        db.session.commit()
+
+    def test_create_chart_validate_query_context(self):
+        """
+        Chart API: Test create validate query_context json
+        """
+        slice_name = "chart_with_invalid_query_context"
+        chart_data = {
+            "slice_name": slice_name,
+            "datasource_id": 1,
+            "datasource_type": "table",
+            "query_context": '{"queries":',
+        }
+        self.login(ADMIN_USERNAME)
+        rv = self.post_assert_metric("api/v1/chart/", chart_data, "post")
+        assert rv.status_code == 400
+        response = json.loads(rv.data.decode("utf-8"))
+        assert "query_context" in response["message"]
+        assert self._get_chart_by_name(slice_name) is None
+
+    @parameterized.expand(
+        [
+            ("missing", None),
+            ("empty", ""),
+            ("too_long", "a" * 251),
+        ]
+    )
+    def test_create_chart_validate_slice_name(self, case: str, slice_name: str | None):
+        """
+        Chart API: Test create validates the slice_name bounds
+        """
+        chart_data = {
+            "datasource_id": 1,
+            "datasource_type": "table",
+        }
+        if slice_name is not None:
+            chart_data["slice_name"] = slice_name
+        self.login(ADMIN_USERNAME)
+        rv = self.post_assert_metric("api/v1/chart/", chart_data, "post")
+        assert rv.status_code == 400
+        response = json.loads(rv.data.decode("utf-8"))
+        assert "slice_name" in response["message"]
+
+    def test_create_chart_validate_viz_type_length(self):
+        """
+        Chart API: Test create validates the viz_type length
+        """
+        slice_name = "chart_with_too_long_viz_type"
+        chart_data = {
+            "slice_name": slice_name,
+            "datasource_id": 1,
+            "datasource_type": "table",
+            "viz_type": "a" * 251,
+        }
+        self.login(ADMIN_USERNAME)
+        rv = self.post_assert_metric("api/v1/chart/", chart_data, "post")
+        assert rv.status_code == 400
+        response = json.loads(rv.data.decode("utf-8"))
+        assert "viz_type" in response["message"]
+        assert self._get_chart_by_name(slice_name) is None
+
+    def test_create_chart_with_tags(self):
+        """
+        Chart API: Test create rejects tags, which only ``ChartPutSchema`` accepts
+
+        ``ChartPostSchema`` declares no ``Meta.unknown``, so marshmallow's default
+        ``RAISE`` applies and the unknown field is a validation error.
+        """
+        slice_name = "chart_with_tags"
+        chart_data = {
+            "slice_name": slice_name,
+            "datasource_id": 1,
+            "datasource_type": "table",
+            "tags": [1],
+        }
+        self.login(ADMIN_USERNAME)
+        rv = self.post_assert_metric("api/v1/chart/", chart_data, "post")
+        assert rv.status_code == 400
+        response = json.loads(rv.data.decode("utf-8"))
+        assert "tags" in response["message"]
+        assert self._get_chart_by_name(slice_name) is None
+        assert (
+            db.session.query(TaggedObject)
+            .filter_by(object_type=ObjectType.chart, tag_id=1)
+            .count()
+            == 0
+        )
+
+    def test_create_chart_persists_optional_fields(self):
+        """
+        Chart API: Test create persists the optional metadata fields
+        """
+        chart_data = {
+            "slice_name": "chart_with_optional_fields",
+            "description": "description1",
+            "viz_type": "viz_type1",
+            "params": """{"a": 1}""",
+            "cache_timeout": 1000,
+            "datasource_id": 1,
+            "datasource_type": "table",
+            "certified_by": "John Doe",
+            "certification_details": "Sample certification",
+        }
+        self.login(ADMIN_USERNAME)
+        rv = self.post_assert_metric("api/v1/chart/", chart_data, "post")
+        assert rv.status_code == 201
+        data = json.loads(rv.data.decode("utf-8"))
+        model = db.session.query(Slice).get(data["id"])
+        assert model.description == "description1"
+        assert model.viz_type == "viz_type1"
+        assert model.params == """{"a": 1}"""
+        assert model.cache_timeout == 1000
+        assert model.certified_by == "John Doe"
+        assert model.certification_details == "Sample certification"
+
+        db.session.delete(model)
+        db.session.commit()
+
+    @contextmanager
+    def _without_public_chart_write(self) -> Iterator[None]:
+        """
+        Temporarily revoke ``can_write on Chart`` from the ``Public`` role
+
+        The integration test config sets ``PUBLIC_ROLE_LIKE = "Gamma"``, which grants
+        the permission to ``Public`` and therefore makes it "public" as far as FAB is
+        concerned: ``@protect`` short-circuits on ``is_item_public`` and never checks
+        the requesting user. Route level authorization can only be exercised while
+        that grant is removed.
+        """
+        can_write_chart = security_manager.find_permission_view_menu(
+            "can_write", "Chart"
+        )
+        security_manager.del_permission_role(
+            security_manager.find_role("Public"), can_write_chart
+        )
+        db.session.commit()
+        try:
+            yield
+        finally:
+            security_manager.add_permission_role(
+                security_manager.find_role("Public"), can_write_chart
+            )
+            db.session.commit()
+
+    def test_create_chart_anonymous(self):
+        """
+        Chart API: Test create is not allowed for anonymous users
+        """
+        slice_name = "anonymous_chart"
+        chart_data = {
+            "slice_name": slice_name,
+            "datasource_id": 1,
+            "datasource_type": "table",
+        }
+        self.logout()
+        with self._without_public_chart_write():
+            rv = self.client.post("api/v1/chart/", json=chart_data)
+        assert rv.status_code == 401
+        assert self._get_chart_by_name(slice_name) is None
+
+    def test_create_chart_without_can_write_permission(self):
+        """
+        Chart API: Test create is forbidden without ``can_write`` on Chart
+        """
+        role_name = "no_chart_write_role"
+        username = "no_chart_write_user"
+        self.create_user_with_roles(username, [role_name], should_create_roles=True)
+        role = security_manager.find_role(role_name)
+        can_write_chart = security_manager.find_permission_view_menu(
+            "can_write", "Chart"
+        )
+        security_manager.del_permission_role(role, can_write_chart)
+        db.session.commit()
+
+        slice_name = "chart_without_write_permission"
+        chart_data = {
+            "slice_name": slice_name,
+            "datasource_id": 1,
+            "datasource_type": "table",
+        }
+        try:
+            self.login(username)
+            with self._without_public_chart_write():
+                rv = self.client.post("api/v1/chart/", json=chart_data)
+            assert rv.status_code == 403
+            assert self._get_chart_by_name(slice_name) is None
+        finally:
+            self.logout()
+            db.session.delete(security_manager.find_user(username))
+            db.session.delete(security_manager.find_role(role_name))
+            db.session.commit()
 
     @pytest.mark.usefixtures("load_birth_names_dashboard_with_slices")
     def test_update_chart(self):
