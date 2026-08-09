@@ -435,6 +435,8 @@ class ChartRestApi(SoftDeleteApiMixin, BaseSupersetModelRestApi):
         try:
             new_model = CreateChartCommand(item).run()
             return self.response(201, id=new_model.id, result=item, uuid=new_model.uuid)
+        except ChartForbiddenError:
+            return self.response_403()
         except DashboardsForbiddenError as ex:
             return self.response(ex.status, message=ex.message)
         except ChartInvalidError as ex:
