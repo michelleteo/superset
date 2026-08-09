@@ -389,3 +389,185 @@ test('shows only exact match when loading dataset from URL, not partial matches'
 
   locationSpy.mockRestore();
 });
+
+function mockDatasetSearch(search: string) {
+  return jest.spyOn(window, 'location', 'get').mockReturnValue({
+    ...window.location,
+    search,
+  } as Location);
+}
+
+test('clears the loading spinner when the dataset parameter request fails', async () => {
+  fetchMock.clearHistory().removeRoutes();
+  fetchMock.get(/\/api\/v1\/dataset\/\?q=.*/, {
+    body: { message: 'Internal server error' },
+    status: 500,
+  });
+
+  const locationSpy = mockDatasetSearch('?dataset=flights');
+
+  render(<ChartCreation user={mockUser} addSuccessToast={() => null} />, {
+    useRedux: true,
+    useRouter: true,
+  });
+
+  expect(screen.getByRole('status')).toBeInTheDocument();
+
+  await waitFor(() => {
+    expect(screen.queryByRole('status')).not.toBeInTheDocument();
+  });
+
+  expect(screen.getByRole('combobox', { name: 'Dataset' })).toBeInTheDocument();
+  expect(
+    screen.getByRole('button', { name: 'Create new chart' }),
+  ).toBeDisabled();
+
+  locationSpy.mockRestore();
+});
+
+test('renders no dataset options when the search request fails', async () => {
+  fetchMock.clearHistory().removeRoutes();
+  fetchMock.get(/\/api\/v1\/dataset\/\?q=.*/, {
+    body: { message: 'Internal server error' },
+    status: 500,
+  });
+
+  await renderComponent();
+
+  const datasourceSelect = screen.getByRole('combobox', { name: 'Dataset' });
+  userEvent.click(datasourceSelect);
+  userEvent.type(datasourceSelect, 'flight');
+
+  await waitFor(() => {
+    expect(fetchMock.callHistory.calls().length).toBeGreaterThan(0);
+  });
+
+  expect(datasourceSelect).toBeInTheDocument();
+  expect(screen.queryAllByRole('option')).toHaveLength(0);
+  expect(
+    screen.getByRole('button', { name: 'Create new chart' }),
+  ).toBeDisabled();
+});
+
+test('selects no datasource when the dataset parameter matches nothing', async () => {
+  fetchMock.clearHistory().removeRoutes();
+  fetchMock.get(/\/api\/v1\/dataset\/\?q=.*/, {
+    body: { result: [], count: 0 },
+    status: 200,
+  });
+
+  const locationSpy = mockDatasetSearch('?dataset=missing_dataset');
+
+  render(<ChartCreation user={mockUser} addSuccessToast={() => null} />, {
+    useRedux: true,
+    useRouter: true,
+  });
+
+  await waitFor(() => {
+    expect(screen.queryByRole('status')).not.toBeInTheDocument();
+  });
+
+  expect(screen.queryByText('missing_dataset')).not.toBeInTheDocument();
+  expect(
+    screen.getByRole('button', { name: 'Create new chart' }),
+  ).toBeDisabled();
+
+  locationSpy.mockRestore();
+});
+
+test('fires the saved toast when the dataset parameter is present', async () => {
+  fetchMock.clearHistory().removeRoutes();
+  fetchMock.get(/\/api\/v1\/dataset\/\?q=.*/, {
+    body: mockDatasourceResponse,
+    status: 200,
+  });
+
+  const addSuccessToast = jest.fn();
+  const locationSpy = mockDatasetSearch('?dataset=table');
+
+  render(<ChartCreation user={mockUser} addSuccessToast={addSuccessToast} />, {
+    useRedux: true,
+    useRouter: true,
+  });
+
+  await waitFor(() => {
+    expect(addSuccessToast).toHaveBeenCalledWith('The dataset has been saved');
+  });
+
+  locationSpy.mockRestore();
+});
+
+test('does not fire the saved toast when the dataset parameter is absent', async () => {
+  fetchMock.clearHistory().removeRoutes();
+  fetchMock.get(/\/api\/v1\/dataset\/\?q=.*/, {
+    body: mockDatasourceResponse,
+    status: 200,
+  });
+
+  const addSuccessToast = jest.fn();
+
+  render(<ChartCreation user={mockUser} addSuccessToast={addSuccessToast} />, {
+    useRedux: true,
+    useRouter: true,
+  });
+
+  expect(
+    await screen.findByRole('combobox', { name: 'Dataset' }),
+  ).toBeVisible();
+  expect(addSuccessToast).not.toHaveBeenCalled();
+});
+
+test('submits via the create button for a dataset name with special characters', async () => {
+  fetchMock.clearHistory().removeRoutes();
+  fetchMock.get(/\/api\/v1\/dataset\/\?q=.*/, {
+    body: {
+      result: [
+        {
+          id: 'flights_special_7',
+          table_name: 'flights Æ / delays & more',
+          datasource_type: 'table',
+          database: { database_name: 'examples' },
+          schema: 'public',
+        },
+      ],
+      count: 1,
+    },
+    status: 200,
+  });
+
+  const locationSpy = mockDatasetSearch(
+    '?dataset=flights%20%C3%86%20%2F%20delays%20%26%20more',
+  );
+
+  mockHistoryPush.mockClear();
+  render(<ChartCreation user={mockUser} addSuccessToast={() => null} />, {
+    useRedux: true,
+    useRouter: true,
+  });
+
+  expect(
+    await screen.findByText('flights Æ / delays & more'),
+  ).toBeInTheDocument();
+  expect(
+    screen.getByRole('button', { name: 'Create new chart' }),
+  ).toBeDisabled();
+
+  userEvent.click(
+    screen.getByRole('tab', {
+      name: /All charts/i,
+    }),
+  );
+  userEvent.click(await screen.findByText('Table'));
+
+  const createButton = screen.getByRole('button', {
+    name: 'Create new chart',
+  });
+  await waitFor(() => expect(createButton).toBeEnabled());
+  userEvent.click(createButton);
+
+  expect(mockHistoryPush).toHaveBeenCalledWith(
+    '/explore/?viz_type=table&datasource=flights_special_7__table',
+  );
+
+  locationSpy.mockRestore();
+});
